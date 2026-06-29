@@ -1,0 +1,17 @@
+[package]
+name = "baton-core"
+version = "0.1.0"
+edition = "2021"
+description = "Baton terminal core: coalesced PTY data plane primitives"
+license = "MIT"
+
+[lib]
+name = "baton_core"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+portable-pty = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
