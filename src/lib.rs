@@ -4,7 +4,7 @@
 //! bounded byte buffers, frame-paced coalescing, and fixed-memory scrollback.
 //! UI/chrome and native GPU composition can evolve without changing these hot-path contracts.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
 use std::sync::mpsc;
 use std::thread;
@@ -288,6 +288,112 @@ impl LocalPty {
 
     pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
         self.child.wait()
+    }
+}
+
+/// Stable identifier for terminal sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SessionId(u64);
+
+impl From<u64> for SessionId {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl SessionId {
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// One PTY plus its Rust-owned VT parser/grid state.
+pub struct TerminalSession {
+    id: SessionId,
+    pty: LocalPty,
+    parser: TerminalParser,
+}
+
+impl TerminalSession {
+    pub fn spawn(
+        id: SessionId,
+        program: &str,
+        args: &[&str],
+        size: TerminalSize,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            id,
+            pty: LocalPty::spawn(program, args)?,
+            parser: TerminalParser::new(size),
+        })
+    }
+
+    pub fn id(&self) -> SessionId {
+        self.id
+    }
+
+    pub fn drain_output(&mut self, timeout: Duration) -> anyhow::Result<Vec<u8>> {
+        let output = self.pty.read_available(timeout)?;
+        self.parser.advance_bytes(&output);
+        Ok(output)
+    }
+
+    pub fn snapshot(&self) -> TerminalSnapshot {
+        self.parser.snapshot()
+    }
+
+    pub fn wait(&mut self) -> anyhow::Result<ExitStatus> {
+        Ok(self.pty.wait()?)
+    }
+}
+
+/// Owns multiple terminal sessions and routes control/data-plane calls by id.
+pub struct SessionManager {
+    size: TerminalSize,
+    next_id: u64,
+    sessions: BTreeMap<SessionId, TerminalSession>,
+}
+
+impl SessionManager {
+    pub fn new(size: TerminalSize) -> Self {
+        Self {
+            size,
+            next_id: 1,
+            sessions: BTreeMap::new(),
+        }
+    }
+
+    pub fn spawn(&mut self, program: &str, args: &[&str]) -> anyhow::Result<SessionId> {
+        let id = SessionId(self.next_id);
+        self.next_id += 1;
+
+        let session = TerminalSession::spawn(id, program, args, self.size)?;
+        self.sessions.insert(id, session);
+        Ok(id)
+    }
+
+    pub fn session_ids(&self) -> Vec<SessionId> {
+        self.sessions.keys().copied().collect()
+    }
+
+    pub fn drain_output(&mut self, id: SessionId, timeout: Duration) -> anyhow::Result<Vec<u8>> {
+        self.session_mut(id)?.drain_output(timeout)
+    }
+
+    pub fn snapshot(&self, id: SessionId) -> anyhow::Result<TerminalSnapshot> {
+        Ok(self.session(id)?.snapshot())
+    }
+
+    pub fn session(&self, id: SessionId) -> anyhow::Result<&TerminalSession> {
+        self.sessions
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("terminal session {} not found", id.get()))
+    }
+
+    pub fn session_mut(&mut self, id: SessionId) -> anyhow::Result<&mut TerminalSession> {
+        self.sessions
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("terminal session {} not found", id.get()))
     }
 }
 
