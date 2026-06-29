@@ -1,0 +1,13 @@
+[package]
+name = "baton-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Baton desktop shell"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+baton-core = { path = ".." }
+tauri = { version = "2", features = [] }

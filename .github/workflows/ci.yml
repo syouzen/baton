@@ -28,17 +28,38 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
       - name: Cache cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --check
 
+      - name: Check Tauri formatting
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run frontend shell test
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
 
       - name: Run tests
         run: cargo test --all -- --nocapture
 
       - name: Check crate
         run: cargo check
+
+      - name: Check Tauri shell
+        run: cargo check --manifest-path src-tauri/Cargo.toml

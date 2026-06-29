@@ -14,6 +14,14 @@ Baton's core rule is simple: keep terminal throughput out of the webview hot pat
 - fixed-visible-line scrollback contract with pluggable spill sink (`ScrollbackSpill`)
 - throughput benchmark harness for coalesced PTY output (`measure_pty_throughput`)
 
+## Implemented slice-1 shell
+
+- Tauri v2 desktop app scaffold (`src-tauri/`)
+- Vite + TypeScript frontend shell (`index.html`, `src/main.ts`, `src/styles.css`)
+- one main window titled `baton`
+- minimal chrome bar, session rail, and reserved terminal pane placeholder
+- no IDE side features; terminal hot-path remains in Rust core
+
 ## Architecture
 
 ```text
@@ -56,10 +64,21 @@ See [`docs/architecture.md`](docs/architecture.md) for the detailed boundary con
 Run the full local gate before every PR:
 
 ```bash
+npm install
+npm test
+npm run build
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all -- --nocapture
 cargo check
+cargo check --manifest-path src-tauri/Cargo.toml
+npm run tauri -- build --debug
+```
+
+For interactive shell verification:
+
+```bash
+npm run tauri -- dev
 ```
 
 Run the PTY throughput smoke when touching PTY/coalescing/parser paths:
@@ -97,7 +116,6 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the repository workflow:
 
 ## Next slice
 
-1. Create minimal Tauri v2 shell for baton chrome.
-2. Expose Tauri command APIs for create/write/resize/kill.
-3. Integrate xterm.js WebGL renderer as the slice-1 escape hatch.
-4. Build minimal terminal chrome: tabs/status without IDE features.
+1. Expose Tauri command APIs for create/write/resize/kill.
+2. Integrate xterm.js WebGL renderer as the slice-1 escape hatch.
+3. Build minimal terminal chrome: tabs/status without IDE features.
