@@ -2,6 +2,17 @@ use baton_core::{SessionManager, TerminalSize};
 use std::time::Duration;
 
 #[test]
+fn session_manager_kills_and_removes_sessions() {
+    let mut manager = SessionManager::new(TerminalSize::new(5, 20).unwrap());
+    let session_id = manager.spawn("/bin/sh", &["-lc", "sleep 30"]).unwrap();
+
+    manager.kill(session_id).unwrap();
+
+    assert!(manager.session_ids().is_empty());
+    assert!(manager.snapshot(session_id).is_err());
+}
+
+#[test]
 fn session_manager_creates_unique_sessions_and_lists_them() {
     let mut manager = SessionManager::new(TerminalSize::new(5, 20).unwrap());
 

@@ -49,6 +49,9 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Run Tauri clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
       - name: Run frontend shell test
         run: npm test
 
@@ -63,3 +66,6 @@ jobs:
 
       - name: Check Tauri shell
         run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Run Tauri command tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture

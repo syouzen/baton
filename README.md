@@ -20,6 +20,7 @@ Baton's core rule is simple: keep terminal throughput out of the webview hot pat
 - Vite + TypeScript frontend shell (`index.html`, `src/main.ts`, `src/styles.css`)
 - one main window titled `baton`
 - minimal chrome bar, session rail, and reserved terminal pane placeholder
+- Tauri command API for session create/write/resize/kill/list control plane
 - no IDE side features; terminal hot-path remains in Rust core
 
 ## Architecture
@@ -69,9 +70,11 @@ npm test
 npm run build
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --all -- --nocapture
 cargo check
 cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
 npm run tauri -- build --debug
 ```
 
@@ -116,6 +119,5 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the repository workflow:
 
 ## Next slice
 
-1. Expose Tauri command APIs for create/write/resize/kill.
-2. Integrate xterm.js WebGL renderer as the slice-1 escape hatch.
-3. Build minimal terminal chrome: tabs/status without IDE features.
+1. Integrate xterm.js WebGL renderer as the slice-1 escape hatch.
+2. Build minimal terminal chrome: tabs/status without IDE features.

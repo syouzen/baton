@@ -139,6 +139,7 @@ name = "baton-desktop"
 version = "0.1.0"
 dependencies = [
  "baton-core",
+ "serde",
  "tauri",
  "tauri-build",
 ]
