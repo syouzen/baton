@@ -433,6 +433,60 @@ impl LocalPty {
     }
 }
 
+/// Throughput benchmark summary for the PTY data plane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThroughputReport {
+    pub bytes_read: usize,
+    pub frames_read: usize,
+    pub max_frame_bytes: usize,
+    pub elapsed: Duration,
+}
+
+impl ThroughputReport {
+    pub fn mib_per_second(&self) -> f64 {
+        let seconds = self.elapsed.as_secs_f64();
+        if seconds == 0.0 {
+            return 0.0;
+        }
+        (self.bytes_read as f64 / 1024.0 / 1024.0) / seconds
+    }
+}
+
+/// Run a command through LocalPty and measure coalesced output throughput.
+pub fn measure_pty_throughput(
+    program: &str,
+    args: &[&str],
+    read_config: PtyReadConfig,
+    expected_bytes: usize,
+    timeout: Duration,
+) -> anyhow::Result<ThroughputReport> {
+    if expected_bytes == 0 {
+        anyhow::bail!("expected bytes must be non-zero");
+    }
+    if timeout.is_zero() {
+        anyhow::bail!("benchmark timeout must be non-zero");
+    }
+
+    let mut pty = LocalPty::spawn_with_read_config(program, args, read_config)?;
+    let started = Instant::now();
+    let frames = pty.read_coalesced(timeout)?;
+    let elapsed = started.elapsed();
+    let bytes_read = frames.iter().map(Vec::len).sum();
+
+    if bytes_read < expected_bytes {
+        anyhow::bail!(
+            "benchmark read {bytes_read} bytes before timeout/disconnect, expected at least {expected_bytes}"
+        );
+    }
+
+    Ok(ThroughputReport {
+        bytes_read,
+        frames_read: frames.len(),
+        max_frame_bytes: frames.iter().map(Vec::len).max().unwrap_or(0),
+        elapsed,
+    })
+}
+
 /// Stable identifier for terminal sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(u64);

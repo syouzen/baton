@@ -9,7 +9,7 @@ Implemented first slice from `AGENTS.md`:
 - Alacritty-backed VT parser boundary and visible grid snapshot (`TerminalParser`)
 - multi-session routing model (`SessionId`, `TerminalSession`, `SessionManager`)
 - fixed-visible-line scrollback contract with pluggable spill sink (`ScrollbackSpill`)
-- PTY resize control path shared by kernel winsize and parser viewport (`TerminalSize`)
+- throughput benchmark harness for coalesced PTY output (`measure_pty_throughput`)
 
 This is intentionally a core crate first. The Tauri/webview chrome and renderer can sit on top of these hot-path contracts without pushing raw terminal throughput into JS.
 
@@ -18,10 +18,11 @@ This is intentionally a core crate first. The Tauri/webview chrome and renderer 
 ```bash
 cargo test --all -- --nocapture
 cargo check
+cargo run --example throughput_bench -- 1048576
 ```
 
 ## Next slice
 
-1. Wire `LocalPty` reader into a parser boundary (`alacritty_terminal` or equivalent adapter).
-2. Add a Tauri v2 shell with xterm.js + WebGL as the escape-hatch renderer.
-3. Add throughput/idle benchmarks for the spec targets.
+1. Add a Tauri v2 shell with xterm.js + WebGL as the escape-hatch renderer.
+2. Expose Tauri command APIs for create/write/resize/kill.
+3. Add branch protection and full development workflow docs.
