@@ -14,7 +14,7 @@ use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config as TermConfig, Term};
 use alacritty_terminal::vte::ansi::Processor as VteProcessor;
-use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterPty, PtySize};
 
 /// Producer-side signal used to pause PTY reads before bytes are dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +156,25 @@ impl Dimensions for TerminalSize {
     }
 }
 
+impl From<TerminalSize> for PtySize {
+    fn from(size: TerminalSize) -> Self {
+        Self {
+            rows: size.rows as u16,
+            cols: size.cols as u16,
+            pixel_width: 0,
+            pixel_height: 0,
+        }
+    }
+}
+
+impl TryFrom<PtySize> for TerminalSize {
+    type Error = anyhow::Error;
+
+    fn try_from(size: PtySize) -> Result<Self, Self::Error> {
+        Self::new(size.rows as usize, size.cols as usize)
+    }
+}
+
 /// Snapshot of the Rust-owned terminal grid for renderers and tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSnapshot {
@@ -198,6 +217,11 @@ impl TerminalParser {
 
     pub fn advance_bytes(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.term, bytes);
+    }
+
+    pub fn resize(&mut self, size: TerminalSize) {
+        self.term.resize(size);
+        self.size = size;
     }
 
     pub fn snapshot(&self) -> TerminalSnapshot {
@@ -261,6 +285,7 @@ impl Default for PtyReadConfig {
 /// It exposes PTY bytes, not parsed cells, so the same reader path can feed the coalescer today
 /// and an `alacritty_terminal` parser in the next slice.
 pub struct LocalPty {
+    master: Box<dyn MasterPty>,
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     output_rx: mpsc::Receiver<std::io::Result<Vec<u8>>>,
@@ -308,6 +333,7 @@ impl LocalPty {
         });
 
         Ok(Self {
+            master: pair.master,
             child,
             writer,
             output_rx,
@@ -394,6 +420,14 @@ impl LocalPty {
         self.writer.flush()
     }
 
+    pub fn resize(&mut self, size: TerminalSize) -> anyhow::Result<()> {
+        self.master.resize(size.into())
+    }
+
+    pub fn size(&self) -> anyhow::Result<TerminalSize> {
+        self.master.get_size()?.try_into()
+    }
+
     pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
         self.child.wait()
     }
@@ -450,6 +484,16 @@ impl TerminalSession {
         Ok(self.pty.write_input(bytes)?)
     }
 
+    pub fn resize(&mut self, size: TerminalSize) -> anyhow::Result<()> {
+        self.pty.resize(size)?;
+        self.parser.resize(size);
+        Ok(())
+    }
+
+    pub fn size(&self) -> TerminalSize {
+        self.parser.snapshot().size()
+    }
+
     pub fn snapshot(&self) -> TerminalSnapshot {
         self.parser.snapshot()
     }
@@ -494,6 +538,10 @@ impl SessionManager {
 
     pub fn write_input(&mut self, id: SessionId, bytes: &[u8]) -> anyhow::Result<()> {
         self.session_mut(id)?.write_input(bytes)
+    }
+
+    pub fn resize(&mut self, id: SessionId, size: TerminalSize) -> anyhow::Result<()> {
+        self.session_mut(id)?.resize(size)
     }
 
     pub fn snapshot(&self, id: SessionId) -> anyhow::Result<TerminalSnapshot> {
