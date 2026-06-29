@@ -7,6 +7,7 @@ Implemented first slice from `AGENTS.md`:
 - bounded PTY byte ring with explicit backpressure (`ByteRing`)
 - frame-cadenced batching/coalescing (`Coalescer`)
 - Alacritty-backed VT parser boundary and visible grid snapshot (`TerminalParser`)
+- multi-session routing model (`SessionId`, `TerminalSession`, `SessionManager`)
 - fixed-visible-line scrollback contract (`Scrollback`)
 - local PTY spawn/read/wait wrapper (`LocalPty`)
 
