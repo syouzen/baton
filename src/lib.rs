@@ -428,6 +428,10 @@ impl LocalPty {
         self.master.get_size()?.try_into()
     }
 
+    pub fn kill(&mut self) -> std::io::Result<()> {
+        self.child.kill()
+    }
+
     pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
         self.child.wait()
     }
@@ -555,6 +559,10 @@ impl TerminalSession {
     pub fn wait(&mut self) -> anyhow::Result<ExitStatus> {
         Ok(self.pty.wait()?)
     }
+
+    pub fn kill(&mut self) -> anyhow::Result<()> {
+        Ok(self.pty.kill()?)
+    }
 }
 
 /// Owns multiple terminal sessions and routes control/data-plane calls by id.
@@ -596,6 +604,14 @@ impl SessionManager {
 
     pub fn resize(&mut self, id: SessionId, size: TerminalSize) -> anyhow::Result<()> {
         self.session_mut(id)?.resize(size)
+    }
+
+    pub fn kill(&mut self, id: SessionId) -> anyhow::Result<()> {
+        let mut session = self
+            .sessions
+            .remove(&id)
+            .ok_or_else(|| anyhow::anyhow!("terminal session {} not found", id.get()))?;
+        session.kill()
     }
 
     pub fn snapshot(&self, id: SessionId) -> anyhow::Result<TerminalSnapshot> {

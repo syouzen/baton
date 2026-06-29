@@ -1,3 +1,4 @@
+import { createSession, listSessions } from './commands';
 import './styles.css';
 
 const app = document.querySelector<HTMLDivElement>('#app');
@@ -18,7 +19,8 @@ app.innerHTML = `
         <strong>baton</strong>
         <span>slice-1 shell</span>
       </div>
-      <div class="session-status" aria-label="terminal status">local · ready</div>
+      <div class="session-status" aria-label="terminal status" data-testid="session-status">local · ready</div>
+      <button class="chrome-action" type="button" data-testid="new-session-button">New</button>
     </header>
 
     <section class="workspace" aria-label="terminal workspace">
@@ -35,3 +37,32 @@ app.innerHTML = `
     </section>
   </main>
 `;
+
+const status = document.querySelector<HTMLDivElement>('[data-testid="session-status"]');
+const newSessionButton = document.querySelector<HTMLButtonElement>('[data-testid="new-session-button"]');
+
+async function refreshSessionStatus() {
+  const sessions = await listSessions();
+  if (status) {
+    status.textContent = `${sessions.length} session${sessions.length === 1 ? '' : 's'} · ready`;
+  }
+}
+
+newSessionButton?.addEventListener('click', async () => {
+  try {
+    const session = await createSession();
+    if (status) {
+      status.textContent = `terminal-${session.id} · ${session.cols}x${session.rows}`;
+    }
+  } catch (error) {
+    if (status) {
+      status.textContent = `command error · ${String(error)}`;
+    }
+  }
+});
+
+void refreshSessionStatus().catch(() => {
+  if (status) {
+    status.textContent = 'local · ready';
+  }
+});
