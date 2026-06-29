@@ -5,7 +5,7 @@ Spec-driven terminal core prototype.
 Implemented first slice from `AGENTS.md`:
 
 - bounded PTY byte ring with explicit backpressure (`ByteRing`)
-- frame-cadenced batching/coalescing (`Coalescer`)
+- live PTY reader coalescing with configurable frame/capacity policy (`PtyReadConfig`)
 - Alacritty-backed VT parser boundary and visible grid snapshot (`TerminalParser`)
 - multi-session routing model (`SessionId`, `TerminalSession`, `SessionManager`)
 - fixed-visible-line scrollback contract (`Scrollback`)

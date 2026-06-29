@@ -224,6 +224,38 @@ impl TerminalParser {
     }
 }
 
+/// Live PTY read coalescing configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PtyReadConfig {
+    pub ring_capacity: usize,
+    pub frame_interval: Duration,
+}
+
+impl PtyReadConfig {
+    pub fn new(ring_capacity: usize, frame_interval: Duration) -> anyhow::Result<Self> {
+        if ring_capacity == 0 {
+            anyhow::bail!("PTY read ring capacity must be non-zero");
+        }
+        if frame_interval.is_zero() {
+            anyhow::bail!("PTY read frame interval must be non-zero");
+        }
+
+        Ok(Self {
+            ring_capacity,
+            frame_interval,
+        })
+    }
+}
+
+impl Default for PtyReadConfig {
+    fn default() -> Self {
+        Self {
+            ring_capacity: 1024 * 1024,
+            frame_interval: Duration::from_millis(8),
+        }
+    }
+}
+
 /// A thin local PTY session wrapper for the slice-1 data plane.
 ///
 /// It exposes PTY bytes, not parsed cells, so the same reader path can feed the coalescer today
@@ -232,10 +264,19 @@ pub struct LocalPty {
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     output_rx: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    read_config: PtyReadConfig,
 }
 
 impl LocalPty {
     pub fn spawn(program: &str, args: &[&str]) -> anyhow::Result<Self> {
+        Self::spawn_with_read_config(program, args, PtyReadConfig::default())
+    }
+
+    pub fn spawn_with_read_config(
+        program: &str,
+        args: &[&str],
+        read_config: PtyReadConfig,
+    ) -> anyhow::Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize::default())?;
 
@@ -270,25 +311,81 @@ impl LocalPty {
             child,
             writer,
             output_rx,
+            read_config,
         })
     }
 
     pub fn read_available(&mut self, timeout: Duration) -> std::io::Result<Vec<u8>> {
-        let deadline = Instant::now() + timeout;
-        let mut out = Vec::new();
+        Ok(self.read_coalesced(timeout)?.concat())
+    }
+
+    pub fn read_coalesced(&mut self, timeout: Duration) -> std::io::Result<Vec<Vec<u8>>> {
+        let started = Instant::now();
+        let deadline = started + timeout;
+        let mut coalescer = Coalescer::new(
+            self.read_config.ring_capacity,
+            self.read_config.frame_interval,
+        );
+        let mut frames = Vec::new();
 
         loop {
             let now = Instant::now();
             if now >= deadline {
-                return Ok(out);
+                Self::flush_pending(&mut coalescer, &mut frames);
+                return Ok(frames);
             }
 
             match self.output_rx.recv_timeout(deadline - now) {
-                Ok(Ok(chunk)) => out.extend_from_slice(&chunk),
+                Ok(Ok(chunk)) => {
+                    Self::ingest_coalesced(&mut coalescer, &mut frames, &chunk, started.elapsed())?;
+                    if coalescer.should_flush(started.elapsed()) {
+                        Self::flush_pending(&mut coalescer, &mut frames);
+                    }
+                }
                 Ok(Err(err)) => return Err(err),
-                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(out),
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(out),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    Self::flush_pending(&mut coalescer, &mut frames);
+                    return Ok(frames);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    Self::flush_pending(&mut coalescer, &mut frames);
+                    return Ok(frames);
+                }
             }
+        }
+    }
+
+    fn ingest_coalesced(
+        coalescer: &mut Coalescer,
+        frames: &mut Vec<Vec<u8>>,
+        mut bytes: &[u8],
+        now: Duration,
+    ) -> std::io::Result<()> {
+        while !bytes.is_empty() {
+            match coalescer.ingest_at(bytes, now) {
+                Ok(_) => return Ok(()),
+                Err(Watermark::Full { accepted }) => {
+                    bytes = &bytes[accepted..];
+                    Self::flush_pending(coalescer, frames);
+
+                    if accepted == 0 && bytes.len() > coalescer.ring.capacity() {
+                        let capacity = coalescer.ring.capacity();
+                        coalescer.ingest_at(&bytes[..capacity], now).map_err(|_| {
+                            std::io::Error::other("coalescer rejected a capacity-sized chunk")
+                        })?;
+                        bytes = &bytes[capacity..];
+                        Self::flush_pending(coalescer, frames);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_pending(coalescer: &mut Coalescer, frames: &mut Vec<Vec<u8>>) {
+        let frame = coalescer.flush();
+        if !frame.is_empty() {
+            frames.push(frame);
         }
     }
 
