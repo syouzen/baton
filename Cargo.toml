@@ -10,6 +10,7 @@ name = "baton_core"
 path = "src/lib.rs"
 
 [dependencies]
+alacritty_terminal = "0.26"
 anyhow = "1"
 portable-pty = "0.9"
 
