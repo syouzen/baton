@@ -9,7 +9,7 @@ Implemented first slice from `AGENTS.md`:
 - Alacritty-backed VT parser boundary and visible grid snapshot (`TerminalParser`)
 - multi-session routing model (`SessionId`, `TerminalSession`, `SessionManager`)
 - fixed-visible-line scrollback contract (`Scrollback`)
-- local PTY spawn/read/write/wait wrapper (`LocalPty`)
+- PTY resize control path shared by kernel winsize and parser viewport (`TerminalSize`)
 
 This is intentionally a core crate first. The Tauri/webview chrome and renderer can sit on top of these hot-path contracts without pushing raw terminal throughput into JS.
 
