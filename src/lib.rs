@@ -5,7 +5,7 @@
 //! UI/chrome and native GPU composition can evolve without changing these hot-path contracts.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -230,6 +230,7 @@ impl TerminalParser {
 /// and an `alacritty_terminal` parser in the next slice.
 pub struct LocalPty {
     child: Box<dyn Child + Send + Sync>,
+    writer: Box<dyn Write + Send>,
     output_rx: mpsc::Receiver<std::io::Result<Vec<u8>>>,
 }
 
@@ -244,6 +245,7 @@ impl LocalPty {
         }
 
         let child = pair.slave.spawn_command(cmd)?;
+        let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
         let (output_tx, output_rx) = mpsc::channel();
         thread::spawn(move || {
@@ -264,7 +266,11 @@ impl LocalPty {
             }
         });
 
-        Ok(Self { child, output_rx })
+        Ok(Self {
+            child,
+            writer,
+            output_rx,
+        })
     }
 
     pub fn read_available(&mut self, timeout: Duration) -> std::io::Result<Vec<u8>> {
@@ -284,6 +290,11 @@ impl LocalPty {
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(out),
             }
         }
+    }
+
+    pub fn write_input(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.writer.write_all(bytes)?;
+        self.writer.flush()
     }
 
     pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
@@ -338,6 +349,10 @@ impl TerminalSession {
         Ok(output)
     }
 
+    pub fn write_input(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        Ok(self.pty.write_input(bytes)?)
+    }
+
     pub fn snapshot(&self) -> TerminalSnapshot {
         self.parser.snapshot()
     }
@@ -378,6 +393,10 @@ impl SessionManager {
 
     pub fn drain_output(&mut self, id: SessionId, timeout: Duration) -> anyhow::Result<Vec<u8>> {
         self.session_mut(id)?.drain_output(timeout)
+    }
+
+    pub fn write_input(&mut self, id: SessionId, bytes: &[u8]) -> anyhow::Result<()> {
+        self.session_mut(id)?.write_input(bytes)
     }
 
     pub fn snapshot(&self, id: SessionId) -> anyhow::Result<TerminalSnapshot> {
