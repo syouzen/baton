@@ -21,6 +21,11 @@ cargo check
 cargo run --example throughput_bench -- 1048576
 ```
 
+## Branch workflow
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the repository workflow:
+feature branches target `develop`, and release/stabilization PRs promote `develop` to protected `main` after the required `Rust core` CI check passes.
+
 ## Next slice
 
 1. Add a Tauri v2 shell with xterm.js + WebGL as the escape-hatch renderer.
