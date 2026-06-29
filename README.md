@@ -19,8 +19,10 @@ Baton's core rule is simple: keep terminal throughput out of the webview hot pat
 - Tauri v2 desktop app scaffold (`src-tauri/`)
 - Vite + TypeScript frontend shell (`index.html`, `src/main.ts`, `src/styles.css`)
 - one main window titled `baton`
-- minimal chrome bar, session rail, and reserved terminal pane placeholder
-- Tauri command API for session create/write/resize/kill/list control plane
+- minimal chrome bar, session rail, active-session status, new/close controls
+- xterm.js terminal renderer with WebGL addon and fallback warning
+- Tauri command API for session create/write/resize/kill/list/read control plane
+- coalesced PTY output delivered to frontend via `terminal-output` events
 - no IDE side features; terminal hot-path remains in Rust core
 
 ## Architecture
@@ -115,9 +117,9 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the repository workflow:
 
 1. **Slice 1:** build the Tauri v2 shell, command API, and xterm.js WebGL renderer as the escape-hatch renderer. This gets a working terminal and measurable baseline quickly.
 2. **Measure:** use vtebench-style workloads, waterfall output, idle CPU, input latency, and the throughput harness.
-3. **Slice 2 only if needed:** native GPU renderer and child-surface composition. Do not build this until slice-1 measurements miss the target.
+3. **Slice 2 only if needed:** native GPU renderer and child-surface composition. Do not build this until slice-1 measurements miss the target. See [`docs/native-gpu-spike.md`](docs/native-gpu-spike.md).
 
 ## Next slice
 
-1. Integrate xterm.js WebGL renderer as the slice-1 escape hatch.
-2. Build minimal terminal chrome: tabs/status without IDE features.
+1. Record slice-1 renderer/frame/idle measurements against the xterm.js WebGL baseline.
+2. Tighten terminal lifecycle polish only where measurements or manual usage expose gaps.

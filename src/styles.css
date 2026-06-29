@@ -24,6 +24,10 @@ body {
   overflow: hidden;
 }
 
+button {
+  font: inherit;
+}
+
 .shell {
   display: grid;
   grid-template-rows: 52px 1fr;
@@ -36,7 +40,7 @@ body {
 .chrome-bar {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   padding: 0 18px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.16);
   background: rgba(15, 23, 42, 0.82);
@@ -71,6 +75,7 @@ body {
   display: flex;
   flex-direction: column;
   line-height: 1.1;
+  min-width: 120px;
 }
 
 .title-stack span,
@@ -81,6 +86,10 @@ body {
 
 .session-status {
   margin-left: auto;
+  max-width: 46vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chrome-action {
@@ -89,12 +98,23 @@ body {
   color: #dbeafe;
   background: rgba(30, 64, 175, 0.28);
   padding: 7px 12px;
+  cursor: pointer;
   -webkit-app-region: no-drag;
+}
+
+.chrome-action:hover {
+  background: rgba(37, 99, 235, 0.36);
+}
+
+.chrome-action--danger {
+  border-color: rgba(248, 113, 113, 0.34);
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.22);
 }
 
 .workspace {
   display: grid;
-  grid-template-columns: 160px 1fr;
+  grid-template-columns: 172px 1fr;
   min-height: 0;
 }
 
@@ -102,16 +122,26 @@ body {
   padding: 14px;
   border-right: 1px solid rgba(148, 163, 184, 0.12);
   background: rgba(15, 23, 42, 0.56);
+  overflow: auto;
 }
 
 .session-tab {
   width: 100%;
+  margin-bottom: 8px;
   padding: 10px 12px;
-  border: 1px solid rgba(96, 165, 250, 0.28);
+  border: 1px solid rgba(96, 165, 250, 0.18);
   border-radius: 10px;
-  color: #dbeafe;
-  background: rgba(30, 64, 175, 0.24);
+  color: #bfdbfe;
+  background: rgba(15, 23, 42, 0.42);
   text-align: left;
+  cursor: pointer;
+}
+
+.session-tab--active,
+.session-tab:hover {
+  border-color: rgba(96, 165, 250, 0.48);
+  color: #eff6ff;
+  background: rgba(30, 64, 175, 0.34);
 }
 
 .terminal-pane {
@@ -125,14 +155,17 @@ body {
   overflow: hidden;
 }
 
-.terminal-placeholder {
+.xterm-host {
+  width: 100%;
   height: 100%;
-  padding: 18px;
-  color: #cbd5e1;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  padding: 12px;
 }
 
-.prompt {
-  color: #34d399;
-  margin-right: 8px;
+.xterm-host .xterm {
+  height: 100%;
+}
+
+.xterm-host .xterm-viewport,
+.xterm-host .xterm-screen {
+  border-radius: 10px;
 }
