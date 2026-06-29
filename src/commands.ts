@@ -6,6 +6,11 @@ export interface SessionView {
   cols: number;
 }
 
+export interface TerminalOutputEvent {
+  sessionId: number;
+  bytes: number[];
+}
+
 export function createSession(program?: string, args?: string[]): Promise<SessionView> {
   return invoke<SessionView>('create_session', { program, args });
 }
@@ -36,4 +41,8 @@ export function killSession(sessionId: number): Promise<void> {
 
 export function listSessions(): Promise<SessionView[]> {
   return invoke<SessionView[]>('list_sessions');
+}
+
+export function readSession(sessionId: number): Promise<TerminalOutputEvent> {
+  return invoke<TerminalOutputEvent>('read_session', { sessionId });
 }

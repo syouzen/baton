@@ -1,6 +1,11 @@
 use baton_core::{SessionId, SessionManager, TerminalSize};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
+use tauri::Emitter;
 
 const DEFAULT_ROWS: usize = 24;
 const DEFAULT_COLS: usize = 80;
@@ -48,13 +53,32 @@ impl From<(SessionId, TerminalSize)> for SessionView {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOutputEvent {
+    pub session_id: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl From<(SessionId, Vec<u8>)> for TerminalOutputEvent {
+    fn from((id, bytes): (SessionId, Vec<u8>)) -> Self {
+        Self {
+            session_id: id.get(),
+            bytes,
+        }
+    }
+}
+
 #[tauri::command]
 pub fn create_session(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     program: Option<String>,
     args: Option<Vec<String>>,
 ) -> Result<SessionView, String> {
-    create_session_for_state(&state, program, args)
+    let session = create_session_for_state(&state, program, args)?;
+    spawn_output_loop(app, state.inner().clone(), session.id);
+    Ok(session)
 }
 
 #[tauri::command]
@@ -93,6 +117,14 @@ pub fn kill_session(state: tauri::State<'_, AppState>, session_id: u64) -> Resul
 #[tauri::command]
 pub fn list_sessions(state: tauri::State<'_, AppState>) -> Result<Vec<SessionView>, String> {
     list_sessions_for_state(&state)
+}
+
+#[tauri::command]
+pub fn read_session(
+    state: tauri::State<'_, AppState>,
+    session_id: u64,
+) -> Result<TerminalOutputEvent, String> {
+    read_session_for_state(&state, session_id)
 }
 
 pub fn create_session_for_state(
@@ -157,6 +189,30 @@ pub fn list_sessions_for_state(state: &AppState) -> Result<Vec<SessionView>, Str
                 .map_err(to_command_error)
         })
         .collect()
+}
+
+pub fn read_session_for_state(
+    state: &AppState,
+    session_id: u64,
+) -> Result<TerminalOutputEvent, String> {
+    let id = SessionId::from(session_id);
+    let mut manager = lock_manager(state)?;
+    let bytes = manager
+        .drain_output(id, Duration::from_millis(16))
+        .map_err(to_command_error)?;
+    Ok((id, bytes).into())
+}
+
+fn spawn_output_loop(app: tauri::AppHandle, state: AppState, session_id: u64) {
+    thread::spawn(move || loop {
+        match read_session_for_state(&state, session_id) {
+            Ok(output) if output.bytes.is_empty() => thread::sleep(Duration::from_millis(8)),
+            Ok(output) => {
+                let _ = app.emit("terminal-output", output);
+            }
+            Err(_) => break,
+        }
+    });
 }
 
 fn command_size(rows: usize, cols: usize) -> Result<TerminalSize, String> {
@@ -236,5 +292,20 @@ mod tests {
         assert!(error.contains("terminal size rows and cols must be non-zero"));
 
         kill_session_for_state(&state, created.id).expect("session killed");
+    }
+
+    #[test]
+    fn command_surface_drains_coalesced_output() {
+        let state = AppState::default_for_tests().expect("test state");
+        let created = create_session_for_state(
+            &state,
+            Some("/bin/sh".to_string()),
+            Some(vec!["-lc".to_string(), "printf baton-output".to_string()]),
+        )
+        .expect("session created");
+
+        let output = read_session_for_state(&state, created.id).expect("session output");
+        assert_eq!(output.session_id, created.id);
+        assert_eq!(String::from_utf8(output.bytes).unwrap(), "baton-output");
     }
 }
