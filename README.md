@@ -8,7 +8,7 @@ Implemented first slice from `AGENTS.md`:
 - live PTY reader coalescing with configurable frame/capacity policy (`PtyReadConfig`)
 - Alacritty-backed VT parser boundary and visible grid snapshot (`TerminalParser`)
 - multi-session routing model (`SessionId`, `TerminalSession`, `SessionManager`)
-- fixed-visible-line scrollback contract (`Scrollback`)
+- fixed-visible-line scrollback contract with pluggable spill sink (`ScrollbackSpill`)
 - PTY resize control path shared by kernel winsize and parser viewport (`TerminalSize`)
 
 This is intentionally a core crate first. The Tauri/webview chrome and renderer can sit on top of these hot-path contracts without pushing raw terminal throughput into JS.

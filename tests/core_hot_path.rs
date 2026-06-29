@@ -33,10 +33,10 @@ fn scrollback_keeps_recent_lines_and_spills_older_lines() {
     let mut scrollback = Scrollback::new(3);
 
     for n in 0..5 {
-        scrollback.push_line(format!("line-{n}"));
+        scrollback.push_line(format!("line-{n}")).unwrap();
     }
 
     assert_eq!(scrollback.visible_lines(), &["line-2", "line-3", "line-4"]);
-    assert_eq!(scrollback.spilled_lines(), &["line-0", "line-1"]);
+    assert_eq!(scrollback.spilled_lines(), vec!["line-0", "line-1"]);
     assert_eq!(scrollback.total_lines(), 5);
 }

@@ -561,20 +561,58 @@ impl SessionManager {
     }
 }
 
+/// Spill sink for scrollback lines beyond the in-memory visible cap.
+pub trait ScrollbackSpill: std::fmt::Debug {
+    fn append_line(&mut self, line: String) -> anyhow::Result<()>;
+    fn len(&self) -> usize;
+    fn lines(&self) -> Vec<String>;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Deterministic in-memory spill sink used by tests and early slice-1 builds.
+#[derive(Debug, Default, Clone)]
+pub struct InMemorySpill {
+    lines: Vec<String>,
+}
+
+impl ScrollbackSpill for InMemorySpill {
+    fn append_line(&mut self, line: String) -> anyhow::Result<()> {
+        self.lines.push(line);
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    fn lines(&self) -> Vec<String> {
+        self.lines.clone()
+    }
+}
+
 /// Fixed-memory scrollback model.
 ///
-/// MVP keeps spilled lines in-memory so behavior is deterministic and testable; replacing the spill
-/// vector with SQLite/mmap storage preserves this public contract.
-#[derive(Debug, Clone)]
-pub struct Scrollback {
+/// Keeps only the visible cap in memory and delegates overflow to a spill sink. The default sink is
+/// in-memory for deterministic tests; SQLite/mmap can replace it without changing this contract.
+#[derive(Debug)]
+pub struct Scrollback<S: ScrollbackSpill = InMemorySpill> {
     max_visible_lines: usize,
     visible: Vec<String>,
-    spilled: Vec<String>,
+    spill: S,
     total: usize,
 }
 
-impl Scrollback {
+impl Scrollback<InMemorySpill> {
     pub fn new(max_visible_lines: usize) -> Self {
+        Self::with_spill(max_visible_lines, InMemorySpill::default())
+    }
+}
+
+impl<S: ScrollbackSpill> Scrollback<S> {
+    pub fn with_spill(max_visible_lines: usize, spill: S) -> Self {
         assert!(
             max_visible_lines > 0,
             "scrollback visible line cap must be non-zero"
@@ -582,26 +620,31 @@ impl Scrollback {
         Self {
             max_visible_lines,
             visible: Vec::with_capacity(max_visible_lines),
-            spilled: Vec::new(),
+            spill,
             total: 0,
         }
     }
 
-    pub fn push_line(&mut self, line: impl Into<String>) {
+    pub fn push_line(&mut self, line: impl Into<String>) -> anyhow::Result<()> {
         if self.visible.len() == self.max_visible_lines {
-            let oldest = self.visible.remove(0);
-            self.spilled.push(oldest);
+            self.spill.append_line(self.visible[0].clone())?;
+            self.visible.remove(0);
         }
         self.visible.push(line.into());
         self.total += 1;
+        Ok(())
     }
 
     pub fn visible_lines(&self) -> &[String] {
         &self.visible
     }
 
-    pub fn spilled_lines(&self) -> &[String] {
-        &self.spilled
+    pub fn spill_len(&self) -> usize {
+        self.spill.len()
+    }
+
+    pub fn spilled_lines(&self) -> Vec<String> {
+        self.spill.lines()
     }
 
     pub fn total_lines(&self) -> usize {
