@@ -6,8 +6,9 @@ Implemented first slice from `AGENTS.md`:
 
 - bounded PTY byte ring with explicit backpressure (`ByteRing`)
 - frame-cadenced batching/coalescing (`Coalescer`)
-- fixed visible scrollback with spill contract (`Scrollback`)
-- local PTY spawning via `portable-pty` (`LocalPty`)
+- Alacritty-backed VT parser boundary and visible grid snapshot (`TerminalParser`)
+- fixed-visible-line scrollback contract (`Scrollback`)
+- local PTY spawn/read/wait wrapper (`LocalPty`)
 
 This is intentionally a core crate first. The Tauri/webview chrome and renderer can sit on top of these hot-path contracts without pushing raw terminal throughput into JS.
 

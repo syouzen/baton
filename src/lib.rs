@@ -10,6 +10,10 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::term::{Config as TermConfig, Term};
+use alacritty_terminal::vte::ansi::Processor as VteProcessor;
 use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, PtySize};
 
 /// Producer-side signal used to pause PTY reads before bytes are dropped.
@@ -118,6 +122,105 @@ impl Coalescer {
 
     pub fn pending_len(&self) -> usize {
         self.ring.len()
+    }
+}
+
+/// Visible terminal dimensions used by PTY, parser, and renderer boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalSize {
+    pub rows: usize,
+    pub cols: usize,
+}
+
+impl TerminalSize {
+    pub fn new(rows: usize, cols: usize) -> anyhow::Result<Self> {
+        if rows == 0 || cols == 0 {
+            anyhow::bail!("terminal size rows and cols must be non-zero");
+        }
+
+        Ok(Self { rows, cols })
+    }
+}
+
+impl Dimensions for TerminalSize {
+    fn total_lines(&self) -> usize {
+        self.rows
+    }
+
+    fn screen_lines(&self) -> usize {
+        self.rows
+    }
+
+    fn columns(&self) -> usize {
+        self.cols
+    }
+}
+
+/// Snapshot of the Rust-owned terminal grid for renderers and tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalSnapshot {
+    size: TerminalSize,
+    lines: Vec<String>,
+}
+
+impl TerminalSnapshot {
+    pub fn size(&self) -> TerminalSize {
+        self.size
+    }
+
+    pub fn line_text(&self, row: usize) -> String {
+        self.lines
+            .get(row)
+            .map(|line| line.trim_end().to_owned())
+            .unwrap_or_default()
+    }
+
+    pub fn lines(&self) -> &[String] {
+        &self.lines
+    }
+}
+
+/// VT parser boundary backed by Alacritty's terminal core.
+pub struct TerminalParser {
+    size: TerminalSize,
+    parser: VteProcessor,
+    term: Term<VoidListener>,
+}
+
+impl TerminalParser {
+    pub fn new(size: TerminalSize) -> Self {
+        Self {
+            size,
+            parser: VteProcessor::new(),
+            term: Term::new(TermConfig::default(), &size, VoidListener),
+        }
+    }
+
+    pub fn advance_bytes(&mut self, bytes: &[u8]) {
+        self.parser.advance(&mut self.term, bytes);
+    }
+
+    pub fn snapshot(&self) -> TerminalSnapshot {
+        let mut lines = vec![String::new(); self.size.rows];
+
+        for indexed in self.term.grid().display_iter() {
+            let row = indexed.point.line.0 + self.term.grid().display_offset() as i32;
+            if row < 0 {
+                continue;
+            }
+
+            let row = row as usize;
+            if row >= self.size.rows {
+                continue;
+            }
+
+            lines[row].push(indexed.cell.c);
+        }
+
+        TerminalSnapshot {
+            size: self.size,
+            lines,
+        }
     }
 }
 
