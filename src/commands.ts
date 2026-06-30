@@ -11,6 +11,16 @@ export interface TerminalOutputEvent {
   bytes: number[];
 }
 
+export interface Slice1MeasurementReport {
+  bytesRead: number;
+  framesRead: number;
+  maxFrameBytes: number;
+  elapsedMs: number;
+  throughputMibPerSecond: number;
+  inputRoundTripMs: number;
+  resizeLatencyMicros: number;
+}
+
 export function createSession(program?: string, args?: string[]): Promise<SessionView> {
   return invoke<SessionView>('create_session', { program, args });
 }
@@ -45,4 +55,8 @@ export function listSessions(): Promise<SessionView[]> {
 
 export function readSession(sessionId: number): Promise<TerminalOutputEvent> {
   return invoke<TerminalOutputEvent>('read_session', { sessionId });
+}
+
+export function runBaselineMeasurement(): Promise<Slice1MeasurementReport> {
+  return invoke<Slice1MeasurementReport>('run_baseline_measurement');
 }

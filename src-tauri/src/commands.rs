@@ -1,9 +1,11 @@
-use baton_core::{SessionId, SessionManager, TerminalSize};
+use baton_core::{
+    measure_pty_throughput, LocalPty, PtyReadConfig, SessionId, SessionManager, TerminalSize,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::Emitter;
 
@@ -58,6 +60,18 @@ impl From<(SessionId, TerminalSize)> for SessionView {
 pub struct TerminalOutputEvent {
     pub session_id: u64,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Slice1MeasurementReport {
+    pub bytes_read: usize,
+    pub frames_read: usize,
+    pub max_frame_bytes: usize,
+    pub elapsed_ms: u128,
+    pub throughput_mib_per_second: f64,
+    pub input_round_trip_ms: u128,
+    pub resize_latency_micros: u128,
 }
 
 impl From<(SessionId, Vec<u8>)> for TerminalOutputEvent {
@@ -125,6 +139,11 @@ pub fn read_session(
     session_id: u64,
 ) -> Result<TerminalOutputEvent, String> {
     read_session_for_state(&state, session_id)
+}
+
+#[tauri::command]
+pub fn run_baseline_measurement() -> Result<Slice1MeasurementReport, String> {
+    run_baseline_measurement_for_config(1024 * 1024, Duration::from_secs(30))
 }
 
 pub fn create_session_for_state(
@@ -201,6 +220,54 @@ pub fn read_session_for_state(
         .drain_output(id, Duration::from_millis(16))
         .map_err(to_command_error)?;
     Ok((id, bytes).into())
+}
+
+pub fn run_baseline_measurement_for_config(
+    bytes: usize,
+    timeout: Duration,
+) -> Result<Slice1MeasurementReport, String> {
+    let command =
+        format!("python3 - <<'PY'\nimport sys\nsys.stdout.buffer.write(b'x' * {bytes})\nPY");
+    let throughput = measure_pty_throughput(
+        "/bin/sh",
+        &["-lc", &command],
+        PtyReadConfig::default(),
+        bytes,
+        timeout,
+    )
+    .map_err(to_command_error)?;
+
+    let input_started = Instant::now();
+    let mut echo = LocalPty::spawn("/bin/sh", &["-lc", "read line; printf '%s' \"$line\""])
+        .map_err(to_command_error)?;
+    echo.write_input(b"baton-latency\n")
+        .map_err(to_command_error)?;
+    let echoed = echo
+        .read_available(Duration::from_secs(3))
+        .map_err(to_command_error)?;
+    let input_round_trip_ms = input_started.elapsed().as_millis().max(1);
+    if !String::from_utf8_lossy(&echoed).contains("baton-latency") {
+        return Err("input latency probe did not echo expected marker".to_string());
+    }
+
+    let mut resize_probe =
+        LocalPty::spawn("/bin/sh", &["-lc", "sleep 1"]).map_err(to_command_error)?;
+    let resize_started = Instant::now();
+    resize_probe
+        .resize(TerminalSize::new(30, 100).map_err(to_command_error)?)
+        .map_err(to_command_error)?;
+    let resize_latency_micros = resize_started.elapsed().as_micros().max(1);
+    let _ = resize_probe.kill();
+
+    Ok(Slice1MeasurementReport {
+        bytes_read: throughput.bytes_read,
+        frames_read: throughput.frames_read,
+        max_frame_bytes: throughput.max_frame_bytes,
+        elapsed_ms: throughput.elapsed.as_millis(),
+        throughput_mib_per_second: throughput.mib_per_second(),
+        input_round_trip_ms,
+        resize_latency_micros,
+    })
 }
 
 fn spawn_output_loop(app: tauri::AppHandle, state: AppState, session_id: u64) {
@@ -292,6 +359,20 @@ mod tests {
         assert!(error.contains("terminal size rows and cols must be non-zero"));
 
         kill_session_for_state(&state, created.id).expect("session killed");
+    }
+
+    #[test]
+    fn baseline_measurement_reports_numeric_metrics() {
+        let report = run_baseline_measurement_for_config(65_536, Duration::from_secs(3))
+            .expect("baseline measurement");
+
+        assert_eq!(report.bytes_read, 65_536);
+        assert!(report.frames_read >= 1);
+        assert!(report.max_frame_bytes > 0);
+        assert!(report.elapsed_ms > 0);
+        assert!(report.throughput_mib_per_second > 0.0);
+        assert!(report.input_round_trip_ms > 0);
+        assert!(report.resize_latency_micros > 0);
     }
 
     #[test]

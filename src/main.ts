@@ -8,7 +8,9 @@ import {
   killSession,
   listSessions,
   resizeSession,
+  runBaselineMeasurement,
   type SessionView,
+  type Slice1MeasurementReport,
   type TerminalOutputEvent,
   writeSession,
 } from './commands';
@@ -43,6 +45,20 @@ app.innerHTML = `
       <section class="terminal-pane" data-testid="terminal-pane" aria-label="terminal region">
         <div class="xterm-host" data-testid="xterm-host"></div>
       </section>
+
+      <aside class="measurement-dashboard" data-testid="measurement-dashboard" aria-label="slice-1 measurements">
+        <div class="measurement-header">
+          <strong>Slice-1 baseline</strong>
+          <button class="chrome-action" type="button" data-testid="run-measurement-button">Run</button>
+        </div>
+        <div class="metric-grid" data-testid="metric-grid">
+          <article class="metric-card"><span>Throughput</span><strong data-metric="throughput">—</strong></article>
+          <article class="metric-card"><span>Frames</span><strong data-metric="frames">—</strong></article>
+          <article class="metric-card"><span>Input RTT</span><strong data-metric="input">—</strong></article>
+          <article class="metric-card"><span>Resize</span><strong data-metric="resize">—</strong></article>
+          <article class="metric-card"><span>Renderer frame</span><strong data-metric="renderer">—</strong></article>
+        </div>
+      </aside>
     </section>
   </main>
 `;
@@ -54,6 +70,13 @@ const sessionRail = document.querySelector<HTMLElement>('[data-testid="session-r
 const terminalHost = document.querySelector<HTMLDivElement>('[data-testid="xterm-host"]');
 const newSessionButton = document.querySelector<HTMLButtonElement>('[data-testid="new-session-button"]');
 const closeSessionButton = document.querySelector<HTMLButtonElement>('[data-testid="close-session-button"]');
+const runMeasurementButton = document.querySelector<HTMLButtonElement>('[data-testid="run-measurement-button"]');
+const metricNodes = new Map<string, HTMLElement>(
+  Array.from(document.querySelectorAll<HTMLElement>('[data-metric]')).map((node) => [
+    node.dataset.metric ?? '',
+    node,
+  ]),
+);
 
 if (!terminalHost) {
   throw new Error('baton xterm host was not found');
@@ -132,6 +155,10 @@ async function bootstrap() {
     void closeActiveSession();
   });
 
+  runMeasurementButton?.addEventListener('click', () => {
+    void runMeasurementDashboard();
+  });
+
   await refreshSessions();
   if (!activeSession) {
     await openSession();
@@ -205,6 +232,64 @@ function setActiveSession(session: SessionView) {
     activeSessionLabel.textContent = `terminal-${session.id}`;
   }
   setStatus(`terminal-${session.id} · ${session.cols}x${session.rows}`);
+}
+
+async function runMeasurementDashboard() {
+  setStatus('measurement · running baseline');
+  setMetric('throughput', 'running…');
+  setMetric('renderer', 'measuring…');
+
+  try {
+    const [report, rendererFrameMs] = await Promise.all([
+      runBaselineMeasurement(),
+      measureRendererFrameMs(),
+    ]);
+    renderMeasurementReport(report, rendererFrameMs);
+    setStatus('measurement · complete');
+  } catch (error) {
+    setStatus(`measurement error · ${String(error)}`);
+  }
+}
+
+function renderMeasurementReport(report: Slice1MeasurementReport, rendererFrameMs: number) {
+  setMetric('throughput', `${report.throughputMibPerSecond.toFixed(2)} MiB/s`);
+  setMetric('frames', `${report.framesRead} frames · ${formatBytes(report.bytesRead)}`);
+  setMetric('input', `${report.inputRoundTripMs} ms`);
+  setMetric('resize', `${report.resizeLatencyMicros} µs`);
+  setMetric('renderer', `${rendererFrameMs.toFixed(2)} ms`);
+}
+
+function measureRendererFrameMs(sampleCount = 5): Promise<number> {
+  return new Promise((resolve) => {
+    const deltas: number[] = [];
+    let previous = performance.now();
+
+    const tick = (now: number) => {
+      deltas.push(now - previous);
+      previous = now;
+      if (deltas.length >= sampleCount) {
+        resolve(deltas.reduce((sum, delta) => sum + delta, 0) / deltas.length);
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+
+    requestAnimationFrame(tick);
+  });
+}
+
+function setMetric(key: string, value: string) {
+  const node = metricNodes.get(key);
+  if (node) {
+    node.textContent = value;
+  }
+}
+
+function formatBytes(bytes: number) {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+  }
+  return `${Math.round(bytes / 1024)} KiB`;
 }
 
 function setStatus(message: string) {
