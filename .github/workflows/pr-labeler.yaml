@@ -5,7 +5,7 @@ name: PR labeler
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, synchronize]
 
 jobs:
   labeler:
@@ -20,8 +20,8 @@ jobs:
       - name: Check Labels
         id: labeler
         uses: jimschubert/labeler-action@v1
-        with:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: PR Gifs
         uses: koushikmohan1996/action-pr-gifs@master
         with:
