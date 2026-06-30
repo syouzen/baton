@@ -9,6 +9,7 @@ import {
   listSessions,
   resizeSession,
   runBaselineMeasurement,
+  snapshotSession,
   type SessionView,
   type Slice1MeasurementReport,
   type TerminalOutputEvent,
@@ -219,8 +220,10 @@ function renderSessionRail(sessions: SessionView[]) {
       const session = sessions.find((candidate) => candidate.id === Number(button.dataset.sessionId));
       if (session) {
         setActiveSession(session);
-        terminal.focus();
-        void resizeSession(session.id, terminal.rows, terminal.cols);
+        void restoreSessionScreen(session).then(() => {
+          terminal.focus();
+          return resizeSession(session.id, terminal.rows, terminal.cols);
+        });
       }
     });
   });
@@ -232,6 +235,22 @@ function setActiveSession(session: SessionView) {
     activeSessionLabel.textContent = `terminal-${session.id}`;
   }
   setStatus(`terminal-${session.id} · ${session.cols}x${session.rows}`);
+}
+
+async function restoreSessionScreen(session: SessionView) {
+  try {
+    const snapshot = await snapshotSession(session.id);
+    if (activeSession?.id !== session.id) {
+      return;
+    }
+
+    terminal.reset();
+    terminal.resize(snapshot.cols, snapshot.rows);
+    terminal.write(snapshot.lines.join('\r\n'));
+    setStatus(`terminal-${session.id} · restored`);
+  } catch (error) {
+    setStatus(`restore error · ${String(error)}`);
+  }
 }
 
 async function runMeasurementDashboard() {
