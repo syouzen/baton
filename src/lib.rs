@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::mpsc;
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::VoidListener;
@@ -305,7 +305,9 @@ pub struct LocalPty {
     master: Box<dyn MasterPty>,
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
-    output_rx: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    output_rx: Option<mpsc::Receiver<std::io::Result<Vec<u8>>>>,
+    reader_thread: Option<JoinHandle<()>>,
+    uses_output_handler: bool,
 }
 
 impl LocalPty {
@@ -352,7 +354,8 @@ impl LocalPty {
         let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
         let (output_tx, output_rx) = mpsc::sync_channel(read_config.frame_channel_capacity);
-        thread::spawn(move || {
+        let uses_output_handler = output_handler.is_some();
+        let reader_thread = thread::spawn(move || {
             let started = Instant::now();
             let mut coalescer =
                 Coalescer::new(read_config.ring_capacity, read_config.frame_interval);
@@ -404,7 +407,9 @@ impl LocalPty {
             master: pair.master,
             child,
             writer,
-            output_rx,
+            output_rx: Some(output_rx),
+            reader_thread: Some(reader_thread),
+            uses_output_handler,
         })
     }
 
@@ -422,7 +427,11 @@ impl LocalPty {
                 return Ok(frames);
             }
 
-            match self.output_rx.recv_timeout(deadline - now) {
+            let output_rx = self.output_rx.as_ref().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "PTY output receiver closed")
+            })?;
+
+            match output_rx.recv_timeout(deadline - now) {
                 Ok(Ok(frame)) => frames.push(frame),
                 Ok(Err(err)) => return Err(err),
                 Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
@@ -500,7 +509,14 @@ impl LocalPty {
     }
 
     pub fn kill(&mut self) -> std::io::Result<()> {
-        self.child.kill()
+        let kill_result = self.child.kill();
+        self.output_rx.take();
+        if !self.uses_output_handler {
+            if let Some(reader_thread) = self.reader_thread.take() {
+                let _ = reader_thread.join();
+            }
+        }
+        kill_result
     }
 
     pub fn wait(&mut self) -> std::io::Result<ExitStatus> {

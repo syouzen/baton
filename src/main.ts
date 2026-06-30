@@ -63,6 +63,7 @@ app.innerHTML = `
 `;
 
 const encoder = new TextEncoder();
+const MAX_LIVE_WEBGL_CONTEXTS = 1;
 const status = document.querySelector<HTMLDivElement>('[data-testid="session-status"]');
 const activeSessionLabel = document.querySelector<HTMLSpanElement>('[data-testid="active-session-label"]');
 const sessionRail = document.querySelector<HTMLElement>('[data-testid="session-rail"]');
@@ -85,6 +86,7 @@ interface TerminalInstance {
   terminal: Terminal;
   fitAddon: FitAddon;
   host: HTMLDivElement;
+  webglAddon?: WebglAddon;
 }
 
 let activeSession: SessionView | null = null;
@@ -173,18 +175,6 @@ function createTerminalInstance(session: SessionView): TerminalInstance {
   terminal.open(host);
   fitAddon.fit();
 
-  try {
-    const webglAddon = new WebglAddon();
-    webglAddon.onContextLoss(() => {
-      setStatus('webgl lost · canvas fallback');
-      webglAddon.dispose();
-    });
-    terminal.loadAddon(webglAddon);
-  } catch (error) {
-    console.warn('xterm WebGL renderer unavailable; falling back to canvas/DOM renderer', error);
-    setStatus('webgl fallback · ready');
-  }
-
   terminal.onData((data) => {
     void writeSession(session.id, Array.from(encoder.encode(data))).catch((error) => {
       setStatus(`write error · ${String(error)}`);
@@ -206,8 +196,12 @@ async function closeActiveSession() {
   const closing = activeSession;
   try {
     await killSession(closing.id);
-    terminals.get(closing.id)?.terminal.dispose();
-    terminals.get(closing.id)?.host.remove();
+    const instance = terminals.get(closing.id);
+    if (instance) {
+      deactivateWebglRenderer(instance);
+      instance.terminal.dispose();
+      instance.host.remove();
+    }
     terminals.delete(closing.id);
     activeSession = null;
     await refreshSessions();
@@ -253,8 +247,16 @@ function renderSessionRail(sessions: SessionView[]) {
 function setActiveSession(session: SessionView) {
   activeSession = session;
   terminals.forEach((instance, id) => {
-    instance.host.hidden = id !== session.id;
+    const isActive = id === session.id;
+    instance.host.hidden = !isActive;
+    if (!isActive) {
+      deactivateWebglRenderer(instance);
+    }
   });
+  const activeInstance = terminals.get(session.id);
+  if (activeInstance) {
+    activateWebglRenderer(activeInstance);
+  }
   if (activeSessionLabel) {
     activeSessionLabel.textContent = `terminal-${session.id}`;
   }
@@ -265,6 +267,37 @@ function setActiveSession(session: SessionView) {
 
 function activeTerminal(): TerminalInstance | undefined {
   return activeSession ? terminals.get(activeSession.id) : undefined;
+}
+
+function activateWebglRenderer(instance: TerminalInstance) {
+  if (instance.webglAddon || liveWebglContextCount() >= MAX_LIVE_WEBGL_CONTEXTS) {
+    return;
+  }
+
+  try {
+    const webglAddon = new WebglAddon();
+    webglAddon.onContextLoss(() => {
+      setStatus('webgl lost · canvas fallback');
+      if (instance.webglAddon === webglAddon) {
+        instance.webglAddon = undefined;
+      }
+      webglAddon.dispose();
+    });
+    instance.terminal.loadAddon(webglAddon);
+    instance.webglAddon = webglAddon;
+  } catch (error) {
+    console.warn('xterm WebGL renderer unavailable; falling back to canvas/DOM renderer', error);
+    setStatus('webgl fallback · ready');
+  }
+}
+
+function deactivateWebglRenderer(instance: TerminalInstance) {
+  instance.webglAddon?.dispose();
+  instance.webglAddon = undefined;
+}
+
+function liveWebglContextCount() {
+  return Array.from(terminals.values()).filter((instance) => instance.webglAddon).length;
 }
 
 async function restoreSessionScreen(session: SessionView) {
