@@ -156,9 +156,19 @@ button {
 }
 
 .xterm-host {
+  position: relative;
   width: 100%;
   height: 100%;
   padding: 12px;
+}
+
+.xterm-session-host {
+  width: 100%;
+  height: 100%;
+}
+
+.xterm-session-host[hidden] {
+  display: none;
 }
 
 .xterm-host .xterm {
