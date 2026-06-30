@@ -86,15 +86,17 @@ For interactive shell verification:
 npm run tauri -- dev
 ```
 
-Run the PTY throughput smoke when touching PTY/coalescing/parser paths:
+Run the PTY throughput smoke when touching PTY/coalescing/parser paths. The first argument selects a workload (`cat`, `waterfall`, `ansi`, `unicode`, `scroll`), and the second selects target bytes:
 
 ```bash
-cargo run --example throughput_bench -- 1048576
+cargo run --example throughput_bench -- cat 1048576
+cargo run --example throughput_bench -- waterfall 1048576
 ```
 
 Example smoke output shape:
 
 ```text
+workload=<name>
 bytes_read=1048576
 frames_read=<n>
 max_frame_bytes=<n>

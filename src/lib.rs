@@ -456,6 +456,98 @@ impl ThroughputReport {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThroughputWorkload {
+    Cat,
+    Waterfall,
+    Ansi,
+    Unicode,
+    Scroll,
+}
+
+impl ThroughputWorkload {
+    pub fn names() -> [&'static str; 5] {
+        ["cat", "waterfall", "ansi", "unicode", "scroll"]
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "cat" => Some(Self::Cat),
+            "waterfall" => Some(Self::Waterfall),
+            "ansi" => Some(Self::Ansi),
+            "unicode" => Some(Self::Unicode),
+            "scroll" => Some(Self::Scroll),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Cat => "cat",
+            Self::Waterfall => "waterfall",
+            Self::Ansi => "ansi",
+            Self::Unicode => "unicode",
+            Self::Scroll => "scroll",
+        }
+    }
+
+    pub fn expected_bytes(self, target_bytes: usize) -> usize {
+        target_bytes.max(1)
+    }
+
+    pub fn shell_command(self, target_bytes: usize) -> String {
+        let payload = match self {
+            Self::Cat => "b'x' * target",
+            Self::Waterfall => "(b'waterfall-line-0123456789\\n' * ((target // 26) + 1))[:target]",
+            Self::Ansi => "(b'\\x1b[31mred\\x1b[0m green blue\\n' * ((target // 24) + 1))[:target]",
+            Self::Unicode => {
+                "('λ界🙂 unicode line\\n'.encode('utf-8') * ((target // 24) + 1))[:target]"
+            }
+            Self::Scroll => {
+                "('scroll-line-%06d\\n'.encode('utf-8') * ((target // 19) + 1))[:target]"
+            }
+        };
+        format!(
+            "python3 - <<'PY'\nimport sys\ntarget = {target_bytes}\npayload = {payload}\nsys.stdout.buffer.write(payload)\nPY"
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkloadThroughputReport {
+    pub workload: String,
+    pub bytes_read: usize,
+    pub frames_read: usize,
+    pub max_frame_bytes: usize,
+    pub elapsed: Duration,
+    pub mib_per_second: f64,
+}
+
+pub fn run_throughput_workload(
+    workload: ThroughputWorkload,
+    target_bytes: usize,
+    read_config: PtyReadConfig,
+    timeout: Duration,
+) -> anyhow::Result<WorkloadThroughputReport> {
+    let command = workload.shell_command(target_bytes);
+    let report = measure_pty_throughput(
+        "/bin/sh",
+        &["-lc", &command],
+        read_config,
+        workload.expected_bytes(target_bytes),
+        timeout,
+    )?;
+
+    Ok(WorkloadThroughputReport {
+        workload: workload.name().to_owned(),
+        bytes_read: report.bytes_read,
+        frames_read: report.frames_read,
+        max_frame_bytes: report.max_frame_bytes,
+        elapsed: report.elapsed,
+        mib_per_second: report.mib_per_second(),
+    })
+}
+
 /// Run a command through LocalPty and measure coalesced output throughput.
 pub fn measure_pty_throughput(
     program: &str,
