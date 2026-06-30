@@ -3,8 +3,8 @@
 mod commands;
 
 use commands::{
-    create_session, kill_session, list_sessions, read_session, resize_session, write_session,
-    AppState,
+    create_session, kill_session, list_sessions, read_session, resize_session,
+    run_baseline_measurement, write_session, AppState,
 };
 use tauri::Manager;
 
@@ -17,7 +17,8 @@ fn main() {
             resize_session,
             kill_session,
             list_sessions,
-            read_session
+            read_session,
+            run_baseline_measurement
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
