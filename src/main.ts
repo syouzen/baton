@@ -2,7 +2,6 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import { listen } from '@tauri-apps/api/event';
 import {
   createSession,
   killSession,
@@ -12,7 +11,6 @@ import {
   snapshotSession,
   type SessionView,
   type Slice1MeasurementReport,
-  type TerminalOutputEvent,
   writeSession,
 } from './commands';
 import './styles.css';
@@ -83,68 +81,27 @@ if (!terminalHost) {
   throw new Error('baton xterm host was not found');
 }
 
-let activeSession: SessionView | null = null;
-
-const terminal = new Terminal({
-  allowProposedApi: true,
-  cursorBlink: true,
-  convertEol: true,
-  fontFamily: 'SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-  fontSize: 13,
-  theme: {
-    background: '#020617',
-    foreground: '#d7e1ff',
-    cursor: '#60a5fa',
-    selectionBackground: '#1d4ed8',
-  },
-});
-const fitAddon = new FitAddon();
-terminal.loadAddon(fitAddon);
-terminal.open(terminalHost);
-fitAddon.fit();
-
-try {
-  const webglAddon = new WebglAddon();
-  webglAddon.onContextLoss(() => {
-    setStatus('webgl lost · canvas fallback');
-    webglAddon.dispose();
-  });
-  terminal.loadAddon(webglAddon);
-} catch (error) {
-  console.warn('xterm WebGL renderer unavailable; falling back to canvas/DOM renderer', error);
-  setStatus('webgl fallback · ready');
+interface TerminalInstance {
+  terminal: Terminal;
+  fitAddon: FitAddon;
+  host: HTMLDivElement;
 }
 
-terminal.onData((data) => {
-  if (!activeSession) {
-    return;
-  }
-  void writeSession(activeSession.id, Array.from(encoder.encode(data))).catch((error) => {
-    setStatus(`write error · ${String(error)}`);
-  });
-});
+let activeSession: SessionView | null = null;
+const terminals = new Map<number, TerminalInstance>();
 
 void bootstrap();
 
 async function bootstrap() {
-  const unlistenOutput = await listen<TerminalOutputEvent>('terminal-output', (event) => {
-    if (!activeSession || event.payload.sessionId !== activeSession.id) {
+  const resizeObserver = new ResizeObserver(() => {
+    const instance = activeTerminal();
+    if (!activeSession || !instance) {
       return;
     }
-    terminal.write(new Uint8Array(event.payload.bytes));
-  });
-
-  window.addEventListener('beforeunload', () => {
-    void unlistenOutput();
-  });
-
-  const resizeObserver = new ResizeObserver(() => {
-    fitAddon.fit();
-    if (activeSession) {
-      void resizeSession(activeSession.id, terminal.rows, terminal.cols).catch((error) => {
-        setStatus(`resize error · ${String(error)}`);
-      });
-    }
+    instance.fitAddon.fit();
+    void resizeSession(activeSession.id, instance.terminal.rows, instance.terminal.cols).catch((error) => {
+      setStatus(`resize error · ${String(error)}`);
+    });
   });
   resizeObserver.observe(terminalHost as HTMLDivElement);
 
@@ -168,15 +125,77 @@ async function bootstrap() {
 
 async function openSession() {
   try {
-    const session = await createSession();
+    const pendingOutput: ArrayBuffer[] = [];
+    let sessionId: number | null = null;
+    const session = await createSession(undefined, undefined, (bytes) => {
+      if (sessionId === null) {
+        pendingOutput.push(bytes);
+        return;
+      }
+      writeOutputToSession(sessionId, bytes);
+    });
+    sessionId = session.id;
+
+    const instance = createTerminalInstance(session);
+    terminals.set(session.id, instance);
+    pendingOutput.forEach((bytes) => writeOutputToSession(session.id, bytes));
+
     setActiveSession(session);
-    terminal.reset();
-    terminal.focus();
-    await resizeSession(session.id, terminal.rows, terminal.cols);
+    instance.terminal.focus();
+    await resizeSession(session.id, instance.terminal.rows, instance.terminal.cols);
     await refreshSessions();
   } catch (error) {
     setStatus(`command error · ${String(error)}`);
   }
+}
+
+function createTerminalInstance(session: SessionView): TerminalInstance {
+  const host = document.createElement('div');
+  host.className = 'xterm-session-host';
+  host.dataset.sessionId = String(session.id);
+  terminalHost?.appendChild(host);
+
+  const terminal = new Terminal({
+    allowProposedApi: true,
+    cursorBlink: true,
+    convertEol: true,
+    fontFamily: 'SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    fontSize: 13,
+    theme: {
+      background: '#020617',
+      foreground: '#d7e1ff',
+      cursor: '#60a5fa',
+      selectionBackground: '#1d4ed8',
+    },
+  });
+  const fitAddon = new FitAddon();
+  terminal.loadAddon(fitAddon);
+  terminal.open(host);
+  fitAddon.fit();
+
+  try {
+    const webglAddon = new WebglAddon();
+    webglAddon.onContextLoss(() => {
+      setStatus('webgl lost · canvas fallback');
+      webglAddon.dispose();
+    });
+    terminal.loadAddon(webglAddon);
+  } catch (error) {
+    console.warn('xterm WebGL renderer unavailable; falling back to canvas/DOM renderer', error);
+    setStatus('webgl fallback · ready');
+  }
+
+  terminal.onData((data) => {
+    void writeSession(session.id, Array.from(encoder.encode(data))).catch((error) => {
+      setStatus(`write error · ${String(error)}`);
+    });
+  });
+
+  return { terminal, fitAddon, host };
+}
+
+function writeOutputToSession(sessionId: number, bytes: ArrayBuffer) {
+  terminals.get(sessionId)?.terminal.write(new Uint8Array(bytes));
 }
 
 async function closeActiveSession() {
@@ -187,8 +206,10 @@ async function closeActiveSession() {
   const closing = activeSession;
   try {
     await killSession(closing.id);
+    terminals.get(closing.id)?.terminal.dispose();
+    terminals.get(closing.id)?.host.remove();
+    terminals.delete(closing.id);
     activeSession = null;
-    terminal.reset();
     await refreshSessions();
   } catch (error) {
     setStatus(`close error · ${String(error)}`);
@@ -198,7 +219,10 @@ async function closeActiveSession() {
 async function refreshSessions() {
   const sessions = await listSessions();
   if (sessions.length > 0 && !activeSession) {
-    setActiveSession(sessions[0]);
+    const existing = sessions.find((session) => terminals.has(session.id));
+    if (existing) {
+      setActiveSession(existing);
+    }
   }
   renderSessionRail(sessions);
   setStatus(`${sessions.length} session${sessions.length === 1 ? '' : 's'} · ready`);
@@ -218,12 +242,9 @@ function renderSessionRail(sessions: SessionView[]) {
   sessionRail.querySelectorAll<HTMLButtonElement>('[data-session-id]').forEach((button) => {
     button.addEventListener('click', () => {
       const session = sessions.find((candidate) => candidate.id === Number(button.dataset.sessionId));
-      if (session) {
+      if (session && terminals.has(session.id)) {
         setActiveSession(session);
-        void restoreSessionScreen(session).then(() => {
-          terminal.focus();
-          return resizeSession(session.id, terminal.rows, terminal.cols);
-        });
+        activeTerminal()?.terminal.focus();
       }
     });
   });
@@ -231,23 +252,25 @@ function renderSessionRail(sessions: SessionView[]) {
 
 function setActiveSession(session: SessionView) {
   activeSession = session;
+  terminals.forEach((instance, id) => {
+    instance.host.hidden = id !== session.id;
+  });
   if (activeSessionLabel) {
     activeSessionLabel.textContent = `terminal-${session.id}`;
   }
+  const instance = activeTerminal();
+  instance?.fitAddon.fit();
   setStatus(`terminal-${session.id} · ${session.cols}x${session.rows}`);
+}
+
+function activeTerminal(): TerminalInstance | undefined {
+  return activeSession ? terminals.get(activeSession.id) : undefined;
 }
 
 async function restoreSessionScreen(session: SessionView) {
   try {
-    const snapshot = await snapshotSession(session.id);
-    if (activeSession?.id !== session.id) {
-      return;
-    }
-
-    terminal.reset();
-    terminal.resize(snapshot.cols, snapshot.rows);
-    terminal.write(snapshot.lines.join('\r\n'));
-    setStatus(`terminal-${session.id} · restored`);
+    await snapshotSession(session.id);
+    setStatus(`terminal-${session.id} · preserved`);
   } catch (error) {
     setStatus(`restore error · ${String(error)}`);
   }

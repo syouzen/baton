@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 
 export interface SessionView {
   id: number;
@@ -6,10 +6,7 @@ export interface SessionView {
   cols: number;
 }
 
-export interface TerminalOutputEvent {
-  sessionId: number;
-  bytes: number[];
-}
+export type TerminalOutputHandler = (bytes: ArrayBuffer) => void;
 
 export interface TerminalSnapshotView {
   id: number;
@@ -28,8 +25,16 @@ export interface Slice1MeasurementReport {
   resizeLatencyMicros: number;
 }
 
-export function createSession(program?: string, args?: string[]): Promise<SessionView> {
-  return invoke<SessionView>('create_session', { program, args });
+export function createSession(
+  program?: string,
+  args?: string[],
+  onOutput?: TerminalOutputHandler,
+): Promise<SessionView> {
+  const output = new Channel<ArrayBuffer>();
+  if (onOutput) {
+    output.onmessage = onOutput;
+  }
+  return invoke<SessionView>('create_session', { program, args, output });
 }
 
 export function writeSession(sessionId: number, bytes: number[]): Promise<void> {
@@ -60,8 +65,8 @@ export function listSessions(): Promise<SessionView[]> {
   return invoke<SessionView[]>('list_sessions');
 }
 
-export function readSession(sessionId: number): Promise<TerminalOutputEvent> {
-  return invoke<TerminalOutputEvent>('read_session', { sessionId });
+export function readSession(sessionId: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>('read_session', { sessionId });
 }
 
 export function snapshotSession(sessionId: number): Promise<TerminalSnapshotView> {

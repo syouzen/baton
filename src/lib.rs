@@ -16,6 +16,9 @@ use alacritty_terminal::term::{Config as TermConfig, Term};
 use alacritty_terminal::vte::ansi::Processor as VteProcessor;
 use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterPty, PtySize};
 
+type OutputHandler = Box<dyn Fn(&[u8]) -> bool + Send + 'static>;
+type OutputHandlerRef<'a> = &'a (dyn Fn(&[u8]) -> bool + Send + 'static);
+
 /// Producer-side signal used to pause PTY reads before bytes are dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Watermark {
@@ -253,20 +256,33 @@ impl TerminalParser {
 pub struct PtyReadConfig {
     pub ring_capacity: usize,
     pub frame_interval: Duration,
+    pub frame_channel_capacity: usize,
 }
 
 impl PtyReadConfig {
     pub fn new(ring_capacity: usize, frame_interval: Duration) -> anyhow::Result<Self> {
+        Self::with_frame_channel_capacity(ring_capacity, frame_interval, 1)
+    }
+
+    pub fn with_frame_channel_capacity(
+        ring_capacity: usize,
+        frame_interval: Duration,
+        frame_channel_capacity: usize,
+    ) -> anyhow::Result<Self> {
         if ring_capacity == 0 {
             anyhow::bail!("PTY read ring capacity must be non-zero");
         }
         if frame_interval.is_zero() {
             anyhow::bail!("PTY read frame interval must be non-zero");
         }
+        if frame_channel_capacity == 0 {
+            anyhow::bail!("PTY frame channel capacity must be non-zero");
+        }
 
         Ok(Self {
             ring_capacity,
             frame_interval,
+            frame_channel_capacity,
         })
     }
 }
@@ -276,6 +292,7 @@ impl Default for PtyReadConfig {
         Self {
             ring_capacity: 1024 * 1024,
             frame_interval: Duration::from_millis(8),
+            frame_channel_capacity: 1,
         }
     }
 }
@@ -289,7 +306,6 @@ pub struct LocalPty {
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     output_rx: mpsc::Receiver<std::io::Result<Vec<u8>>>,
-    read_config: PtyReadConfig,
 }
 
 impl LocalPty {
@@ -302,6 +318,28 @@ impl LocalPty {
         args: &[&str],
         read_config: PtyReadConfig,
     ) -> anyhow::Result<Self> {
+        Self::spawn_with_read_config_and_output_handler(program, args, read_config, None)
+    }
+
+    pub fn spawn_with_output_handler(
+        program: &str,
+        args: &[&str],
+        output_handler: OutputHandler,
+    ) -> anyhow::Result<Self> {
+        Self::spawn_with_read_config_and_output_handler(
+            program,
+            args,
+            PtyReadConfig::default(),
+            Some(output_handler),
+        )
+    }
+
+    pub fn spawn_with_read_config_and_output_handler(
+        program: &str,
+        args: &[&str],
+        read_config: PtyReadConfig,
+        output_handler: Option<OutputHandler>,
+    ) -> anyhow::Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize::default())?;
 
@@ -313,19 +351,49 @@ impl LocalPty {
         let child = pair.slave.spawn_command(cmd)?;
         let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
-        let (output_tx, output_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(read_config.frame_channel_capacity);
         thread::spawn(move || {
+            let started = Instant::now();
+            let mut coalescer =
+                Coalescer::new(read_config.ring_capacity, read_config.frame_interval);
             let mut chunk = [0_u8; 8192];
             loop {
                 match reader.read(&mut chunk) {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        let _ = Self::flush_reader_frame(
+                            &mut coalescer,
+                            &output_tx,
+                            output_handler.as_deref(),
+                        );
+                        break;
+                    }
                     Ok(n) => {
-                        if output_tx.send(Ok(chunk[..n].to_vec())).is_err() {
+                        if Self::ingest_reader_chunk(
+                            &mut coalescer,
+                            &output_tx,
+                            output_handler.as_deref(),
+                            &chunk[..n],
+                            started.elapsed(),
+                        )
+                        .is_err()
+                        {
+                            break;
+                        }
+                        if coalescer.pending_len() > 0
+                            && Self::flush_reader_frame(
+                                &mut coalescer,
+                                &output_tx,
+                                output_handler.as_deref(),
+                            )
+                            .is_err()
+                        {
                             break;
                         }
                     }
                     Err(err) => {
-                        let _ = output_tx.send(Err(err));
+                        if output_handler.is_none() {
+                            let _ = output_tx.send(Err(err));
+                        }
                         break;
                     }
                 }
@@ -337,7 +405,6 @@ impl LocalPty {
             child,
             writer,
             output_rx,
-            read_config,
         })
     }
 
@@ -346,44 +413,29 @@ impl LocalPty {
     }
 
     pub fn read_coalesced(&mut self, timeout: Duration) -> std::io::Result<Vec<Vec<u8>>> {
-        let started = Instant::now();
-        let deadline = started + timeout;
-        let mut coalescer = Coalescer::new(
-            self.read_config.ring_capacity,
-            self.read_config.frame_interval,
-        );
+        let deadline = Instant::now() + timeout;
         let mut frames = Vec::new();
 
         loop {
             let now = Instant::now();
             if now >= deadline {
-                Self::flush_pending(&mut coalescer, &mut frames);
                 return Ok(frames);
             }
 
             match self.output_rx.recv_timeout(deadline - now) {
-                Ok(Ok(chunk)) => {
-                    Self::ingest_coalesced(&mut coalescer, &mut frames, &chunk, started.elapsed())?;
-                    if coalescer.should_flush(started.elapsed()) {
-                        Self::flush_pending(&mut coalescer, &mut frames);
-                    }
-                }
+                Ok(Ok(frame)) => frames.push(frame),
                 Ok(Err(err)) => return Err(err),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    Self::flush_pending(&mut coalescer, &mut frames);
-                    return Ok(frames);
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    Self::flush_pending(&mut coalescer, &mut frames);
+                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
                     return Ok(frames);
                 }
             }
         }
     }
 
-    fn ingest_coalesced(
+    fn ingest_reader_chunk(
         coalescer: &mut Coalescer,
-        frames: &mut Vec<Vec<u8>>,
+        output_tx: &mpsc::SyncSender<std::io::Result<Vec<u8>>>,
+        output_handler: Option<OutputHandlerRef<'_>>,
         mut bytes: &[u8],
         now: Duration,
     ) -> std::io::Result<()> {
@@ -392,7 +444,7 @@ impl LocalPty {
                 Ok(_) => return Ok(()),
                 Err(Watermark::Full { accepted }) => {
                     bytes = &bytes[accepted..];
-                    Self::flush_pending(coalescer, frames);
+                    Self::flush_reader_frame(coalescer, output_tx, output_handler)?;
 
                     if accepted == 0 && bytes.len() > coalescer.ring.capacity() {
                         let capacity = coalescer.ring.capacity();
@@ -400,7 +452,7 @@ impl LocalPty {
                             std::io::Error::other("coalescer rejected a capacity-sized chunk")
                         })?;
                         bytes = &bytes[capacity..];
-                        Self::flush_pending(coalescer, frames);
+                        Self::flush_reader_frame(coalescer, output_tx, output_handler)?;
                     }
                 }
             }
@@ -408,10 +460,29 @@ impl LocalPty {
         Ok(())
     }
 
-    fn flush_pending(coalescer: &mut Coalescer, frames: &mut Vec<Vec<u8>>) {
+    fn flush_reader_frame(
+        coalescer: &mut Coalescer,
+        output_tx: &mpsc::SyncSender<std::io::Result<Vec<u8>>>,
+        output_handler: Option<OutputHandlerRef<'_>>,
+    ) -> std::io::Result<()> {
         let frame = coalescer.flush();
-        if !frame.is_empty() {
-            frames.push(frame);
+        if frame.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(handler) = output_handler {
+            if handler(&frame) {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "output handler closed",
+                ))
+            }
+        } else {
+            output_tx.send(Ok(frame)).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "output receiver closed")
+            })
         }
     }
 
@@ -501,10 +572,10 @@ impl ThroughputWorkload {
             Self::Waterfall => "(b'waterfall-line-0123456789\\n' * ((target // 26) + 1))[:target]",
             Self::Ansi => "(b'\\x1b[31mred\\x1b[0m green blue\\n' * ((target // 24) + 1))[:target]",
             Self::Unicode => {
-                "('λ界🙂 unicode line\\n'.encode('utf-8') * ((target // 24) + 1))[:target]"
+                "('λ界🙂 unicode line\\n'.encode('utf-8') * ((target // 23) + 1))[:target]"
             }
             Self::Scroll => {
-                "('scroll-line-%06d\\n'.encode('utf-8') * ((target // 19) + 1))[:target]"
+                "('scroll-line-%06d\\n'.encode('utf-8') * ((target // 17) + 1))[:target]"
             }
         };
         format!(
@@ -613,9 +684,24 @@ impl TerminalSession {
         args: &[&str],
         size: TerminalSize,
     ) -> anyhow::Result<Self> {
+        Self::spawn_with_output_handler(id, program, args, size, None)
+    }
+
+    pub fn spawn_with_output_handler(
+        id: SessionId,
+        program: &str,
+        args: &[&str],
+        size: TerminalSize,
+        output_handler: Option<OutputHandler>,
+    ) -> anyhow::Result<Self> {
+        let pty = if let Some(handler) = output_handler {
+            LocalPty::spawn_with_output_handler(program, args, handler)?
+        } else {
+            LocalPty::spawn(program, args)?
+        };
         Ok(Self {
             id,
-            pty: LocalPty::spawn(program, args)?,
+            pty,
             parser: TerminalParser::new(size),
         })
     }
@@ -674,10 +760,25 @@ impl SessionManager {
     }
 
     pub fn spawn(&mut self, program: &str, args: &[&str]) -> anyhow::Result<SessionId> {
+        self.spawn_with_output_handler(program, args, None)
+    }
+
+    pub fn spawn_with_output_handler(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        output_handler: Option<OutputHandler>,
+    ) -> anyhow::Result<SessionId> {
         let id = SessionId(self.next_id);
         self.next_id += 1;
 
-        let session = TerminalSession::spawn(id, program, args, self.size)?;
+        let session = TerminalSession::spawn_with_output_handler(
+            id,
+            program,
+            args,
+            self.size,
+            output_handler,
+        )?;
         self.sessions.insert(id, session);
         Ok(id)
     }

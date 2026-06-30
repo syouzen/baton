@@ -4,10 +4,9 @@ use baton_core::{
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{Arc, Mutex},
-    thread,
     time::{Duration, Instant},
 };
-use tauri::Emitter;
+use tauri::ipc::Channel;
 
 const DEFAULT_ROWS: usize = 24;
 const DEFAULT_COLS: usize = 80;
@@ -55,13 +54,6 @@ impl From<(SessionId, TerminalSize)> for SessionView {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TerminalOutputEvent {
-    pub session_id: u64,
-    pub bytes: Vec<u8>,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Slice1MeasurementReport {
@@ -83,25 +75,14 @@ pub struct TerminalSnapshotView {
     pub lines: Vec<String>,
 }
 
-impl From<(SessionId, Vec<u8>)> for TerminalOutputEvent {
-    fn from((id, bytes): (SessionId, Vec<u8>)) -> Self {
-        Self {
-            session_id: id.get(),
-            bytes,
-        }
-    }
-}
-
 #[tauri::command]
 pub fn create_session(
-    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     program: Option<String>,
     args: Option<Vec<String>>,
+    output: Channel<Vec<u8>>,
 ) -> Result<SessionView, String> {
-    let session = create_session_for_state(&state, program, args)?;
-    spawn_output_loop(app, state.inner().clone(), session.id);
-    Ok(session)
+    create_session_with_output_channel(&state, program, args, output)
 }
 
 #[tauri::command]
@@ -143,10 +124,7 @@ pub fn list_sessions(state: tauri::State<'_, AppState>) -> Result<Vec<SessionVie
 }
 
 #[tauri::command]
-pub fn read_session(
-    state: tauri::State<'_, AppState>,
-    session_id: u64,
-) -> Result<TerminalOutputEvent, String> {
+pub fn read_session(state: tauri::State<'_, AppState>, session_id: u64) -> Result<Vec<u8>, String> {
     read_session_for_state(&state, session_id)
 }
 
@@ -163,6 +141,7 @@ pub fn run_baseline_measurement() -> Result<Slice1MeasurementReport, String> {
     run_baseline_measurement_for_config(1024 * 1024, Duration::from_secs(30))
 }
 
+#[cfg(test)]
 pub fn create_session_for_state(
     state: &AppState,
     program: Option<String>,
@@ -175,6 +154,28 @@ pub fn create_session_for_state(
     let mut manager = lock_manager(state)?;
     let id = manager
         .spawn(&program, &arg_refs)
+        .map_err(to_command_error)?;
+    let size = manager.session(id).map_err(to_command_error)?.size();
+    Ok((id, size).into())
+}
+
+pub fn create_session_with_output_channel(
+    state: &AppState,
+    program: Option<String>,
+    args: Option<Vec<String>>,
+    output: Channel<Vec<u8>>,
+) -> Result<SessionView, String> {
+    let program = program.unwrap_or_else(|| DEFAULT_PROGRAM.to_string());
+    let args = args.unwrap_or_default();
+    let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+
+    let mut manager = lock_manager(state)?;
+    let id = manager
+        .spawn_with_output_handler(
+            &program,
+            &arg_refs,
+            Some(Box::new(move |bytes| output.send(bytes.to_vec()).is_ok())),
+        )
         .map_err(to_command_error)?;
     let size = manager.session(id).map_err(to_command_error)?.size();
     Ok((id, size).into())
@@ -227,16 +228,12 @@ pub fn list_sessions_for_state(state: &AppState) -> Result<Vec<SessionView>, Str
         .collect()
 }
 
-pub fn read_session_for_state(
-    state: &AppState,
-    session_id: u64,
-) -> Result<TerminalOutputEvent, String> {
+pub fn read_session_for_state(state: &AppState, session_id: u64) -> Result<Vec<u8>, String> {
     let id = SessionId::from(session_id);
     let mut manager = lock_manager(state)?;
-    let bytes = manager
+    manager
         .drain_output(id, Duration::from_millis(16))
-        .map_err(to_command_error)?;
-    Ok((id, bytes).into())
+        .map_err(to_command_error)
 }
 
 pub fn snapshot_session_for_state(
@@ -302,18 +299,6 @@ pub fn run_baseline_measurement_for_config(
         input_round_trip_ms,
         resize_latency_micros,
     })
-}
-
-fn spawn_output_loop(app: tauri::AppHandle, state: AppState, session_id: u64) {
-    thread::spawn(move || loop {
-        match read_session_for_state(&state, session_id) {
-            Ok(output) if output.bytes.is_empty() => thread::sleep(Duration::from_millis(8)),
-            Ok(output) => {
-                let _ = app.emit("terminal-output", output);
-            }
-            Err(_) => break,
-        }
-    });
 }
 
 fn command_size(rows: usize, cols: usize) -> Result<TerminalSize, String> {
@@ -452,7 +437,6 @@ mod tests {
         .expect("session created");
 
         let output = read_session_for_state(&state, created.id).expect("session output");
-        assert_eq!(output.session_id, created.id);
-        assert_eq!(String::from_utf8(output.bytes).unwrap(), "baton-output");
+        assert_eq!(String::from_utf8(output).unwrap(), "baton-output");
     }
 }
