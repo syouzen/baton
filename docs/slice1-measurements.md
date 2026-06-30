@@ -35,4 +35,6 @@ Measured: 2026-06-30 15:06 KST on local macOS host.
 
 ## Decision note
 
-The core PTY data path clears the 100 MiB/s throughput target in release-mode probes after moving output streaming off JSON event IPC and onto a Tauri channel path. Do not start Slice 2/native renderer from these numbers alone: the GUI/webview renderer frame-drop and full Tauri cold-start measurements still need app-level instrumentation before a formal go/no-go.
+The core PTY data path clears the 100 MiB/s throughput target in release-mode probes after moving output streaming off JSON event IPC and onto a Tauri channel path. These are core numbers only: they do not include xterm.js/WebGL renderer timing, frame drops, GPU context churn, or full Tauri window cold-start.
+
+Slice 2/native renderer remains blocked until an end-to-end webview benchmark runs a >=100 MiB/s waterfall workload through the live Tauri app and records renderer frame timing/drop counts. Passing the core probe alone is not a Slice 2 go/no-go signal.

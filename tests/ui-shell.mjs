@@ -16,14 +16,17 @@ assert.match(app, /data-testid="chrome-bar"/, 'shell must include minimal chrome
 assert.doesNotMatch(app, /SCM|Git Graph|Settings/i, 'issue #8 shell must not add IDE features');
 assert.match(css, /\.terminal-pane/, 'terminal pane must have explicit styling');
 assert.match(commands, /new Channel<ArrayBuffer>\(\)/, 'frontend must stream PTY output over a binary Tauri Channel');
+assert.match(commands, /invoke<ArrayBuffer>\('read_session'/, 'read_session fallback path must be consumed as raw bytes');
 assert.match(commands, /invoke<SessionView>\('create_session'/, 'frontend must call create_session');
 assert.match(commands, /invoke<void>\('write_session'/, 'frontend must call write_session');
 assert.match(commands, /invoke<SessionView>\('resize_session'/, 'frontend must call resize_session');
 assert.match(commands, /invoke<void>\('kill_session'/, 'frontend must call kill_session');
 assert.match(commands, /invoke<SessionView\[]>\('list_sessions'/, 'frontend must call list_sessions');
-assert.match(commands, /invoke<ArrayBuffer>\('read_session'/, 'read_session smoke path must return raw bytes, not a JSON number array DTO');
 assert.match(app, /@xterm\/xterm/, 'frontend must use xterm.js renderer');
 assert.match(app, /@xterm\/addon-webgl/, 'frontend must attempt WebGL addon');
+assert.match(app, /MAX_LIVE_WEBGL_CONTEXTS = 1/, 'only the active terminal may hold a live WebGL context');
+assert.match(app, /deactivateWebglRenderer\(instance\)/, 'hidden sessions must dispose WebGL addons instead of hoarding contexts');
+assert.match(app, /liveWebglContextCount\(\) >= MAX_LIVE_WEBGL_CONTEXTS/, 'WebGL activation must respect the live context cap');
 assert.doesNotMatch(app, /listen<.*terminal-output/, 'PTY output must not use JSON event IPC');
 assert.match(app, /writeSession\(session\.id/, 'terminal input must write back to PTY');
 assert.match(app, /data-testid="close-session-button"/, 'chrome must expose close session control');

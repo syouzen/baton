@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, Response};
 
 const DEFAULT_ROWS: usize = 24;
 const DEFAULT_COLS: usize = 80;
@@ -124,8 +124,11 @@ pub fn list_sessions(state: tauri::State<'_, AppState>) -> Result<Vec<SessionVie
 }
 
 #[tauri::command]
-pub fn read_session(state: tauri::State<'_, AppState>, session_id: u64) -> Result<Vec<u8>, String> {
-    read_session_for_state(&state, session_id)
+pub fn read_session(
+    state: tauri::State<'_, AppState>,
+    session_id: u64,
+) -> Result<Response, String> {
+    read_session_response_for_state(&state, session_id)
 }
 
 #[tauri::command]
@@ -236,6 +239,13 @@ pub fn read_session_for_state(state: &AppState, session_id: u64) -> Result<Vec<u
         .map_err(to_command_error)
 }
 
+pub fn read_session_response_for_state(
+    state: &AppState,
+    session_id: u64,
+) -> Result<Response, String> {
+    read_session_for_state(state, session_id).map(Response::new)
+}
+
 pub fn snapshot_session_for_state(
     state: &AppState,
     session_id: u64,
@@ -319,6 +329,7 @@ fn to_command_error(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::ipc::{InvokeResponseBody, IpcResponse};
 
     #[test]
     fn command_surface_creates_lists_resizes_and_kills_sessions() {
@@ -438,5 +449,26 @@ mod tests {
 
         let output = read_session_for_state(&state, created.id).expect("session output");
         assert_eq!(String::from_utf8(output).unwrap(), "baton-output");
+    }
+
+    #[test]
+    fn command_surface_wraps_read_session_in_raw_ipc_response() {
+        let state = AppState::default_for_tests().expect("test state");
+        let created = create_session_for_state(
+            &state,
+            Some("/bin/sh".to_string()),
+            Some(vec!["-lc".to_string(), "printf baton-raw".to_string()]),
+        )
+        .expect("session created");
+
+        let response = read_session_response_for_state(&state, created.id).expect("session output");
+        let body = response.body().expect("response body");
+
+        match body {
+            InvokeResponseBody::Raw(bytes) => assert_eq!(bytes, b"baton-raw".to_vec()),
+            InvokeResponseBody::Json(json) => {
+                panic!("read_session returned JSON instead of raw bytes: {json}")
+            }
+        }
     }
 }

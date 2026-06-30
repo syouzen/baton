@@ -1,6 +1,6 @@
 use baton_core::{LocalPty, PtyReadConfig};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[test]
 fn live_pty_reader_coalesces_output_without_dropping_bytes() {
@@ -63,4 +63,28 @@ fn output_handler_backpressure_stops_reader_until_consumer_drains_frames() {
 
     assert_eq!(total, target_bytes);
     let _ = pty.wait();
+}
+
+#[test]
+fn kill_interrupts_reader_blocked_on_full_output_channel() {
+    let target_bytes = 1_048_576usize;
+    let command = format!(
+        "python3 - <<'PY'\nimport sys, time\nsys.stdout.buffer.write(b'x' * {target_bytes})\nsys.stdout.flush()\ntime.sleep(30)\nPY"
+    );
+    let mut pty = LocalPty::spawn_with_read_config(
+        "/bin/sh",
+        &["-lc", &command],
+        PtyReadConfig::with_frame_channel_capacity(1024, Duration::from_millis(50), 1).unwrap(),
+    )
+    .unwrap();
+
+    std::thread::sleep(Duration::from_millis(100));
+    let started = Instant::now();
+    pty.kill()
+        .expect("kill must interrupt a reader blocked by backpressure");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "kill should not wait for the bounded output consumer to drain"
+    );
 }
