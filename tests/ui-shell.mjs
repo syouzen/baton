@@ -31,6 +31,11 @@ assert.match(app, /runBaselineMeasurement/, 'dashboard must trigger baseline mea
 assert.match(commands, /invoke<Slice1MeasurementReport>\('run_baseline_measurement'/, 'frontend must call run_baseline_measurement');
 assert.match(css, /\.measurement-dashboard/, 'measurement dashboard must have explicit styling');
 assert.match(css, /\.metric-card/, 'measurement metrics must render as cards');
+assert.match(commands, /invoke<TerminalSnapshotView>\('snapshot_session'/, 'frontend must call snapshot_session');
+assert.match(app, /restoreSessionScreen/, 'session switching must restore session screen snapshot');
+assert.match(app, /snapshotSession\(session\.id\)/, 'active session selection must request its snapshot');
+assert.match(app, /terminal\.reset\(\)/, 'screen restore must clear stale xterm buffer before replay');
+assert.match(app, /terminal\.write\(snapshot\.lines\.join/, 'screen restore must replay snapshot lines');
 assert.match(app, /requestAnimationFrame/, 'dashboard must record renderer frame timing in the webview');
 assert.match(css, /\.xterm-host/, 'xterm host must have explicit styling');
 assert.match(nativeGpuDoc, /Entry criteria/, 'native GPU spike document must define entry criteria');

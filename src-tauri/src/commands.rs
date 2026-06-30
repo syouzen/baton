@@ -74,6 +74,15 @@ pub struct Slice1MeasurementReport {
     pub resize_latency_micros: u128,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSnapshotView {
+    pub id: u64,
+    pub rows: usize,
+    pub cols: usize,
+    pub lines: Vec<String>,
+}
+
 impl From<(SessionId, Vec<u8>)> for TerminalOutputEvent {
     fn from((id, bytes): (SessionId, Vec<u8>)) -> Self {
         Self {
@@ -139,6 +148,14 @@ pub fn read_session(
     session_id: u64,
 ) -> Result<TerminalOutputEvent, String> {
     read_session_for_state(&state, session_id)
+}
+
+#[tauri::command]
+pub fn snapshot_session(
+    state: tauri::State<'_, AppState>,
+    session_id: u64,
+) -> Result<TerminalSnapshotView, String> {
+    snapshot_session_for_state(&state, session_id)
 }
 
 #[tauri::command]
@@ -220,6 +237,23 @@ pub fn read_session_for_state(
         .drain_output(id, Duration::from_millis(16))
         .map_err(to_command_error)?;
     Ok((id, bytes).into())
+}
+
+pub fn snapshot_session_for_state(
+    state: &AppState,
+    session_id: u64,
+) -> Result<TerminalSnapshotView, String> {
+    let id = SessionId::from(session_id);
+    let manager = lock_manager(state)?;
+    let snapshot = manager.snapshot(id).map_err(to_command_error)?;
+    let size = snapshot.size();
+
+    Ok(TerminalSnapshotView {
+        id: session_id,
+        rows: size.rows,
+        cols: size.cols,
+        lines: snapshot.lines().to_vec(),
+    })
 }
 
 pub fn run_baseline_measurement_for_config(
@@ -373,6 +407,38 @@ mod tests {
         assert!(report.throughput_mib_per_second > 0.0);
         assert!(report.input_round_trip_ms > 0);
         assert!(report.resize_latency_micros > 0);
+    }
+
+    #[test]
+    fn command_surface_snapshots_session_grid() {
+        let state = AppState::default_for_tests().expect("test state");
+        let created = create_session_for_state(
+            &state,
+            Some("/bin/sh".to_string()),
+            Some(vec![
+                "-lc".to_string(),
+                "printf 'alpha\\nbeta\\n'".to_string(),
+            ]),
+        )
+        .expect("session created");
+
+        let mut snapshot = None;
+        for _ in 0..10 {
+            let _ = read_session_for_state(&state, created.id).expect("output drained");
+            let candidate = snapshot_session_for_state(&state, created.id).expect("snapshot");
+            if candidate.lines.iter().any(|line| line.contains("alpha")) {
+                snapshot = Some(candidate);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let snapshot = snapshot.expect("snapshot contains command output");
+
+        assert_eq!(snapshot.id, created.id);
+        assert_eq!(snapshot.rows, 24);
+        assert_eq!(snapshot.cols, 80);
+        assert!(snapshot.lines.iter().any(|line| line.contains("alpha")));
+        assert!(snapshot.lines.iter().any(|line| line.contains("beta")));
     }
 
     #[test]

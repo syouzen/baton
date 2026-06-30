@@ -4,7 +4,7 @@ mod commands;
 
 use commands::{
     create_session, kill_session, list_sessions, read_session, resize_session,
-    run_baseline_measurement, write_session, AppState,
+    run_baseline_measurement, snapshot_session, write_session, AppState,
 };
 use tauri::Manager;
 
@@ -18,6 +18,7 @@ fn main() {
             kill_session,
             list_sessions,
             read_session,
+            snapshot_session,
             run_baseline_measurement
         ])
         .setup(|app| {
