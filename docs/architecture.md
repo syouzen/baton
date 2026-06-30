@@ -98,10 +98,11 @@ cargo test --all -- --nocapture
 cargo check
 ```
 
-Run the throughput smoke when touching PTY/coalescing/parser paths:
+Run the throughput smoke when touching PTY/coalescing/parser paths. Pass a workload name (`cat`, `waterfall`, `ansi`, `unicode`, `scroll`) and target bytes:
 
 ```bash
-cargo run --example throughput_bench -- 1048576
+cargo run --example throughput_bench -- cat 1048576
+cargo run --example throughput_bench -- ansi 1048576
 ```
 
-The smoke command reports bytes read, frames read, largest frame, elapsed time, and MiB/s. It is a regression signal, not a final performance claim.
+The smoke command reports workload, bytes read, frames read, largest frame, elapsed time, and MiB/s. It is a regression signal, not a final performance claim.
